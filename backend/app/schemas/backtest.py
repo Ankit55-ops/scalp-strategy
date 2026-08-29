@@ -14,6 +14,8 @@ class BacktestRequest(BaseModel):
     run_walk_forward: bool = False
     run_monte_carlo: bool = False
     mc_iterations: int = 500
+    wf_window_bars: int | None = None
+    wf_step_bars: int | None = None
     idempotency_key: str | None = None
 
 

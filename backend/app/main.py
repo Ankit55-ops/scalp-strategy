@@ -17,6 +17,7 @@ from app.api.routes import (
     dashboard,
     deployments,
     health,
+    market_data,
     paper,
     risk,
     strategies,
@@ -88,6 +89,7 @@ app.include_router(paper.router, prefix=api_prefix)
 app.include_router(brokers.router, prefix=api_prefix)
 app.include_router(deployments.router, prefix=api_prefix)
 app.include_router(dashboard.router, prefix=api_prefix)
+app.include_router(market_data.router, prefix=api_prefix)
 app.include_router(audit.router, prefix=api_prefix)
 
 

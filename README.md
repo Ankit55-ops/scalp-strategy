@@ -70,6 +70,9 @@ alembic upgrade head
 # Seed data (sample CSV + demo user + mock symbols)
 python -m scripts.seed
 
+# Optional: regenerate synthetic sample CSV files into backend/data/
+python -m scripts.sample_data
+
 # Run the API server (hot reload)
 uvicorn app.main:app --reload --port 8000
 ```
@@ -81,9 +84,11 @@ API docs: http://localhost:8000/docs
 ```bash
 cd ~/dev/fx-scalper-lab/frontend
 npm install
-cp .env.local.example .env.local   # set NEXT_PUBLIC_API_BASE_URL
+export NEXT_PUBLIC_API_URL=http://localhost:8000/api   # or set in .env.local
 npm run dev                        # http://localhost:3000
 ```
+
+The app defaults to `http://localhost:8000/api` when `NEXT_PUBLIC_API_URL` is unset.
 
 ### 3. Run the tests
 

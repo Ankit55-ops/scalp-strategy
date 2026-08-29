@@ -1,0 +1,66 @@
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: fxscalper
+      POSTGRES_PASSWORD: fxscalper_dev_password
+      POSTGRES_DB: fxscalper
+    ports:
+      - "5432:5432"
+    volumes:
+      - db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fxscalper -d fxscalper"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build:
+      context: ../backend
+      dockerfile: Dockerfile
+    environment:
+      DATABASE_URL: postgresql+psycopg://fxscalper:fxscalper_dev_password@db:5432/fxscalper
+      REDIS_URL: redis://redis:6379/0
+      JWT_SECRET_KEY: change-me-in-production
+      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-c2NhbGVyLXJvY2tzLXNjYWxlci1yb2Nrcy1zY2FsZXItcm9jaw==}"
+      ENVIRONMENT: development
+      MARKET_DATA_PROVIDER: mock
+      CORS_ORIGINS: '["http://localhost:3000"]'
+    ports:
+      - "8000:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    command: >
+      sh -c "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"
+
+  frontend:
+    build:
+      context: ../frontend
+      dockerfile: Dockerfile
+    environment:
+      NEXT_PUBLIC_API_URL: http://localhost:8000/api
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+
+volumes:
+  db_data:
+
+networks:
+  default:
+    name: fxscalper-net

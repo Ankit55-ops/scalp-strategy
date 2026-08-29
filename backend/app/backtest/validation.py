@@ -58,26 +58,66 @@ def monte_carlo_slippage_sensitivity(
 def walk_forward_test(
     backtester_factory,
     candles_by_pair,
-    window_bars: int,
-    step_bars: int,
+    window_bars: int = 4000,
+    step_bars: int = 2000,
     starting_balance: float = 100000.0,
 ) -> dict:
-    """Slide a training window forward, testing on the following OOS window."""
-    results = []
-    all_candles = candles_by_pair[0]
-    if len(all_candles) < window_bars + step_bars:
+    """Proper temporal walk-forward: fit/optimize on the IS window, evaluate OOS next.
+
+    ``backtester_factory(candles)`` must return an already-bound Backtester whose
+    spec/cost were (optionally) selected on the IS window. Each fold evaluates
+    the strategy on the following OOS bars and reports its net P&L and trade
+    count, so the summary compares in-sample vs. out-of-sample behaviour.
+    """
+    n = len(candles_by_pair)
+    if n < window_bars + step_bars:
         return {"completed": False, "note": "insufficient data for walk-forward"}
+    windows = []
+    is_nets, oos_nets = [], []
     i = 0
-    while i + window_bars + step_bars <= len(all_candles):
-        train = all_candles[i : i + window_bars]
-        test = all_candles[i + window_bars : i + window_bars + step_bars]
-        out = backtester_factory(train).run(train, "EURUSD", "M5", starting_balance)
-        metrics = compute_metrics(out["trades"], out["equity_curve"], starting_balance)
-        results.append(
-            {"train_start": train[0]["ts"], "oos_net": metrics["net_profit"], "oos_trades": metrics["num_trades"]}
+    while i + window_bars + step_bars <= n:
+        train = candles_by_pair[i : i + window_bars]
+        test = candles_by_pair[i + window_bars : i + window_bars + step_bars]
+        is_out = backtester_factory(train).run(
+            train, "EURUSD", "M5", starting_balance
         )
+        oos_out = backtester_factory(test).run(
+            test, "EURUSD", "M5", starting_balance
+        )
+        is_m = compute_metrics(is_out["trades"], is_out["equity_curve"], starting_balance)
+        oos_m = compute_metrics(oos_out["trades"], oos_out["equity_curve"], starting_balance)
+        windows.append(
+            {
+                "window": len(windows) + 1,
+                "is_start": train[0]["ts"],
+                "oos_start": test[0]["ts"],
+                "is_net": round(is_m["net_profit"], 2),
+                "is_trades": is_m["num_trades"],
+                "oos_net": round(oos_m["net_profit"], 2),
+                "oos_trades": oos_m["num_trades"],
+            }
+        )
+        is_nets.append(is_m["net_profit"])
+        oos_nets.append(oos_m["net_profit"])
         i += step_bars
-    return {"completed": True, "windows": results}
+
+    positive_oos = sum(1 for v in oos_nets if v > 0)
+    overfit = not oos_nets or (sum(oos_nets) <= 0 and sum(is_nets) > 0)
+    return {
+        "completed": True,
+        "windows": windows,
+        "is_total_net": round(sum(is_nets), 2),
+        "oos_total_net": round(sum(oos_nets), 2),
+        "oos_positive_windows": positive_oos,
+        "oos_window_count": len(oos_nets),
+        "overfit_warning": overfit,
+        "note": (
+            "strategy underperforms or loses out-of-sample "
+            "relative to in-sample; treat parameters as overfit."
+            if overfit
+            else "out-of-sample behaviour is consistent with in-sample."
+        ),
+    }
 
 
 # Eligibility scoring config (transparent, explainable).

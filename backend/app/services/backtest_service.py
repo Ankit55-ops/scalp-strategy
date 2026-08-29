@@ -17,6 +17,7 @@ from app.backtest.metrics import (
 from app.backtest.validation import (
     classify_strategy,
     run_monte_carlo_trade_order,
+    walk_forward_test,
 )
 from app.models import BacktestJob, BacktestMetric, BacktestRun, SimulatedOrder, Strategy
 from app.providers.factory import get_market_data_provider
@@ -88,11 +89,32 @@ def run_backtest(db: Session, job: BacktestJob, strategy: Strategy) -> BacktestR
             all_trades, iterations=req.mc_iterations
         )
     if req.run_walk_forward:
-        robustness["walk_forward"] = {
-            "completed": False,
-            "note": "walk-forward requires a dedicated temporal data split; "
-            "run full OOS validation in the Backtest Lab.",
-        }
+        if len(req.pairs) == 1:
+            try:
+                cost = build_cost_params(req, req.pairs[0])
+
+                def factory(cands):
+                    return Backtester(spec_model, cost, risk_engine=None)
+
+                robustness["walk_forward"] = walk_forward_test(
+                    factory,
+                    provider.get_historical_candles(
+                        req.pairs[0], req.timeframe, start, end
+                    ),
+                    window_bars=getattr(req, "wf_window_bars", None) or 4000,
+                    step_bars=getattr(req, "wf_step_bars", None) or 2000,
+                    starting_balance=req.balance,
+                )
+            except Exception as exc:
+                robustness["walk_forward"] = {
+                    "completed": False,
+                    "note": f"walk-forward failed: {exc}",
+                }
+        else:
+            robustness["walk_forward"] = {
+                "completed": False,
+                "note": "walk-forward requires a single pair; select one pair.",
+            }
 
     run.status = "completed"
     run.equity_curve = all_equity

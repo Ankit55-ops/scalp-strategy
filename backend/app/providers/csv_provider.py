@@ -18,7 +18,9 @@ class CSVMarketDataProvider(MarketDataProvider):
     name = "csv"
 
     def __init__(self, data_dir: str | Path | None = None) -> None:
-        self.data_dir = Path(data_dir) if data_dir else Path(__file__).resolve().parent.parent / "data"
+        if data_dir is None:
+            data_dir = Path(__file__).resolve().parent.parent.parent / "data"
+        self.data_dir = Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
 
     def _candle_file(self, symbol: str, timeframe: str) -> Path:
@@ -113,4 +115,11 @@ def _parse_ts(value: str) -> float:
             return dt.timestamp()
         except ValueError:
             continue
+    try:
+        dt = datetime.fromisoformat(value.replace("Z", "+00:00"))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt.timestamp()
+    except ValueError:
+        pass
     raise ValueError(f"cannot parse timestamp: {value}")
