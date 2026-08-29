@@ -10,10 +10,12 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
 from app.api.routes import (
+    alerts,
     audit,
     auth,
     backtests,
     brokers,
+    chart_layouts,
     dashboard,
     deployments,
     health,
@@ -90,7 +92,9 @@ app.include_router(brokers.router, prefix=api_prefix)
 app.include_router(deployments.router, prefix=api_prefix)
 app.include_router(dashboard.router, prefix=api_prefix)
 app.include_router(market_data.router, prefix=api_prefix)
+app.include_router(chart_layouts.router, prefix=api_prefix)
 app.include_router(audit.router, prefix=api_prefix)
+app.include_router(alerts.router, prefix=api_prefix)
 
 
 @app.get("/", include_in_schema=False)

@@ -19,6 +19,15 @@ class BrokerOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BrokerUpdate(BaseModel):
+    label: str | None = None
+    status: str | None = None
+
+
+class BrokerConnectTest(BaseModel):
+    api_key: str | None = None
+
+
 class LiveDeploymentRequestCreate(BaseModel):
     strategy_id: str
     broker_connection_id: str
@@ -27,3 +36,7 @@ class LiveDeploymentRequestCreate(BaseModel):
 
 class LiveDeploymentApprove(BaseModel):
     confirm: bool = True
+
+
+class LiveDeploymentReject(BaseModel):
+    reason: str = "rejected by reviewer"

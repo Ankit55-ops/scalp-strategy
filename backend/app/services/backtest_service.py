@@ -38,9 +38,29 @@ def build_cost_params(req: BacktestRequest, symbol: str) -> CostParams:
         spread_pips=req.spread_pips or 0.8,
         commission_per_lot=req.commission_per_lot or 3.0,
         slippage_pips=req.slippage_pips or 0.3,
+        swap_pips_per_night=req.swap_pips_per_night,
         contract_size=100000.0,
         pip_size=ps,
     )
+
+
+def _load_events(db: Session, start: datetime, end: datetime) -> list[dict]:
+    from app.models import EconomicEvent
+
+    rows = (
+        db.query(EconomicEvent)
+        .filter(EconomicEvent.event_time >= start.timestamp(), EconomicEvent.event_time <= end.timestamp())
+        .all()
+    )
+    return [
+        {
+            "time": e.event_time,
+            "impact": e.impact,
+            "currency": e.currency,
+            "name": e.name,
+        }
+        for e in rows
+    ]
 
 
 def run_backtest(db: Session, job: BacktestJob, strategy: Strategy) -> BacktestRun:
@@ -64,6 +84,7 @@ def run_backtest(db: Session, job: BacktestJob, strategy: Strategy) -> BacktestR
 
     all_trades = []
     all_equity = []
+    events = _load_events(db, start, end)
     for pair in req.pairs:
         candles = provider.get_historical_candles(pair, req.timeframe, start, end)
         if not candles:
@@ -72,7 +93,7 @@ def run_backtest(db: Session, job: BacktestJob, strategy: Strategy) -> BacktestR
             db.commit()
             return run
         cost = build_cost_params(req, pair)
-        bt = Backtester(spec_model, cost, risk_engine=None)
+        bt = Backtester(spec_model, cost, risk_engine=None, events=events)
         out = bt.run(candles, pair, req.timeframe, req.balance)
         all_trades.extend(out["trades"])
         all_equity = all_equity or out["equity_curve"]
@@ -94,7 +115,7 @@ def run_backtest(db: Session, job: BacktestJob, strategy: Strategy) -> BacktestR
                 cost = build_cost_params(req, req.pairs[0])
 
                 def factory(cands):
-                    return Backtester(spec_model, cost, risk_engine=None)
+                    return Backtester(spec_model, cost, risk_engine=None, events=events)
 
                 robustness["walk_forward"] = walk_forward_test(
                     factory,

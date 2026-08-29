@@ -33,3 +33,12 @@ class StrategyCreate(BaseModel):
 class StrategyVersionCreate(BaseModel):
     spec: StrategySpec
     notes: str = ""
+
+
+class StrategyUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=255)
+    status: str | None = Field(
+        default=None, pattern=r"^(draft|active|paused|archived)$"
+    )
+    spec: StrategySpec | None = None
+    notes: str = ""

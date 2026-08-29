@@ -454,7 +454,10 @@ class Backtester:
         # slippage on exit
         slippage_exit = self.cost.slippage_pips * self.cost.pip_size * pos.size_units
         spread_exit = self.cost.spread_pips * self.cost.pip_size * pos.size_units / 2.0
-        total_cost = pos.entry_cost + slippage_exit + spread_exit + commission
+        # swap: charged per night a position is held
+        nights = max(0, (exit_ts - pos.entry_ts) / 86400.0)
+        swap = self.cost.swap_pips_per_night * self.cost.pip_size * pos.size_units * nights
+        total_cost = pos.entry_cost + slippage_exit + spread_exit + commission + swap
         net = gross - total_cost
         pips = (exit_price - pos.entry_price) / self.cost.pip_size
         if pos.side == "short":
@@ -476,6 +479,7 @@ class Backtester:
             "spread_cost": round(pos.entry_cost + spread_exit, 4),
             "slippage_cost": round(slippage_exit, 4),
             "commission": round(commission, 4),
+            "swap": round(swap, 4),
             "pips": round(pips, 2),
             "reasons_entry": pos.reasons,
             "reasons_exit": [{"rule_id": reason, "description": desc}],

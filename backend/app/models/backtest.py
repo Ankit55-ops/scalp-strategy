@@ -17,6 +17,7 @@ class BacktestJob(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     strategy_id: Mapped[str] = mapped_column(
         ForeignKey("strategies.id", ondelete="CASCADE"), index=True
     )
+    idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True, index=True)
     status: Mapped[str] = mapped_column(String(32), default="queued")
     progress: Mapped[float] = mapped_column(Float, default=0.0)
     error: Mapped[str | None] = mapped_column(String(1024), nullable=True)

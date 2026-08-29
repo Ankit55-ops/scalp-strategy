@@ -2,7 +2,7 @@
 
 import { FormEvent, useEffect, useState } from "react";
 import { api, ApiError, tokenStore } from "@/lib/api";
-import { Badge, Card, SectionTitle, SectionTitle as _ST, Stat } from "@/components/ui";
+import { Badge, Card, SectionTitle, Stat } from "@/components/ui";
 import EquityChart from "@/components/EquityChart";
 import type { BacktestSummary, Strategy, Trade } from "@/types";
 
@@ -49,8 +49,19 @@ export default function BacktestsPage() {
           run_walk_forward: wf,
         },
       });
-      const [s, t, eCurve] = await Promise.all([
-        api<BacktestSummary>(`/backtests/${job.id}`, { token: tokenStore.get() }),
+
+      // Poll until the job settles (queued/running may be async via the RQ worker).
+      let s = await api<BacktestSummary>(`/backtests/${job.id}`, { token: tokenStore.get() });
+      for (let attempt = 0; attempt < 60; attempt++) {
+        if (s.status === "completed" || s.status === "failed") break;
+        await new Promise((r) => setTimeout(r, 750));
+        s = await api<BacktestSummary>(`/backtests/${job.id}`, { token: tokenStore.get() });
+      }
+      if (s.status === "queued" || s.status === "running") {
+        setError("Backtest is still processing in the background. Refresh to see progress.");
+      }
+
+      const [t, eCurve] = await Promise.all([
         api<Trade[]>(`/backtests/${job.id}/trades`, { token: tokenStore.get() }).catch(() => []),
         api<{ ts: number; equity: number }[]>(`/backtests/${job.id}/equity-curve`, { token: tokenStore.get() }).catch(() => []),
       ]);

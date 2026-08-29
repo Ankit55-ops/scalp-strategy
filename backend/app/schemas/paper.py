@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 
 class PaperTradingStart(BaseModel):
@@ -16,3 +16,43 @@ class PaperStatus(BaseModel):
     equity: float
     open_positions: int
     closed_trades: int
+
+
+class PaperOrderRequest(BaseModel):
+    strategy_id: str
+    side: str = Field(pattern=r"^(long|short|buy|sell)$")
+    size_units: float | None = Field(default=None, gt=0)
+
+
+class PaperOrderResult(BaseModel):
+    approved: bool
+    position_id: str | None = None
+    order_id: str | None = None
+    symbol: str | None = None
+    entry_price: float | None = None
+    stop_loss: float | None = None
+    take_profit: float | None = None
+    reason: str | None = None
+    correlation_id: str | None = None
+
+
+class PaperPositionOut(BaseModel):
+    id: str
+    order_id: str | None = None
+    symbol: str
+    side: str
+    size_units: float
+    entry_price: float
+    mark_price: float
+    stop_loss: float
+    take_profit: float
+    open_ts: float
+    unrealized_pnl: float
+
+
+class PaperCloseResult(BaseModel):
+    id: str
+    status: str
+    exit_price: float
+    net_pnl: float
+    pips: float

@@ -29,6 +29,8 @@ class Settings(BaseSettings):
     MARKET_DATA_PROVIDER: str = "mock"
     BROKER_PROVIDER: str = "simulated"
 
+    BACKTEST_ASYNC: bool = False
+
     ENABLE_CSRF: bool = False
 
     DATA_ENCRYPTION_KEY: str = ""

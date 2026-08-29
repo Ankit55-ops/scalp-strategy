@@ -21,4 +21,9 @@ def get_market_data_provider(provider: str | None = None) -> MarketDataProvider:
 
 @lru_cache
 def get_broker_provider(provider: str | None = None) -> BrokerProvider:
-    return SimulatedBroker()
+    name = (provider or get_settings().BROKER_PROVIDER).lower()
+    if name == "simulated":
+        return SimulatedBroker()
+    raise ValueError(
+        f"broker provider '{name}' is not implemented; available: simulated"
+    )

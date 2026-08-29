@@ -30,6 +30,9 @@ class PaperPosition(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     strategy_id: Mapped[str | None] = mapped_column(
         ForeignKey("strategies.id", ondelete="CASCADE"), nullable=True, index=True
     )
+    order_id: Mapped[str | None] = mapped_column(
+        ForeignKey("simulated_orders.id", ondelete="SET NULL"), nullable=True, index=True
+    )
     symbol: Mapped[str] = mapped_column(String(32))
     side: Mapped[str] = mapped_column(String(8))
     size_units: Mapped[float] = mapped_column(Float)
@@ -37,4 +40,10 @@ class PaperPosition(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     stop_loss: Mapped[float] = mapped_column(Float)
     take_profit: Mapped[float] = mapped_column(Float)
     open_ts: Mapped[float] = mapped_column(Float)
+    exit_ts: Mapped[float | None] = mapped_column(Float, nullable=True)
+    exit_price: Mapped[float | None] = mapped_column(Float, nullable=True)
+    gross_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    net_pnl: Mapped[float] = mapped_column(Float, default=0.0)
+    pips: Mapped[float] = mapped_column(Float, default=0.0)
+    exit_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
     status: Mapped[str] = mapped_column(String(24), default="open")

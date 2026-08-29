@@ -11,6 +11,7 @@ class BacktestRequest(BaseModel):
     spread_pips: float | None = None
     commission_per_lot: float | None = None
     slippage_pips: float | None = None
+    swap_pips_per_night: float = 0.0
     run_walk_forward: bool = False
     run_monte_carlo: bool = False
     mc_iterations: int = 500

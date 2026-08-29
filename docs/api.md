@@ -63,29 +63,62 @@ Kill switch scopes: `global`, `strategy/{id}`, `pair/{symbol}`.
 | Method | Path | Description |
 |---|---|---|
 | POST | `/paper-trading/start` | Start simulated account (seed balance). |
+| POST | `/paper-trading/stop` | Stop account; optionally close open positions. |
 | GET | `/paper-trading/status` | Account equity / open positions / closed trades. |
 | POST | `/paper-trading/order` | Submit an order; risk engine must approve. |
+| GET | `/paper-trading/positions` | Open positions with mark-to-market unrealized P&L. |
+| POST | `/paper-trading/positions/{id}/close` | Close a position at the current quote. |
+| GET | `/paper-trading/trades` | Closed-trade history. |
+| GET | `/paper-trading/signals` | Latest mock signals per strategy. |
+
+Every order is gated by the **RiskEngine**: kill switches, session, news
+blackout, spread ceiling, open-position cap, stop-distance floor, daily-loss
+limit and correlated-exposure ceiling. Rejections are written to the audit log,
+a `RiskEvent`, and an `Alert`.
 
 ## Brokers & live deployment
 
 | Method | Path | Description |
 |---|---|---|
-| POST | `/brokers/connect` | Register a broker connection (simulated only for now). |
+| POST | `/brokers/connect` | Register a broker connection (simulated only for now); secrets encrypted at rest. |
 | GET | `/brokers` | List connections. |
+| GET | `/brokers/{id}` | Connection detail incl. provider symbols. |
+| PATCH | `/brokers/{id}` | Update label/status. |
+| DELETE | `/brokers/{id}` | Remove connection. |
+| POST | `/brokers/{id}/test` | Test the connection against the provider. |
 | POST | `/live-deployments/request` | Request live deployment (gated). |
+| GET | `/live-deployments` | List requests, optional `?status=` filter. |
+| GET | `/live-deployments/{id}` | Detail incl. live pre-flight checks. |
+| POST | `/live-deployments/{id}/approve` | Superuser-only; re-runs pre-flight gates. |
+| POST | `/live-deployments/{id}/reject` | Superuser-only. |
+| POST | `/live-deployments/{id}/disable` | Superuser-only. |
 
-Live deployment is **disabled by default** and requires: a real broker adapter,
-an approved paper-trading track record, `risk_acknowledged: true`, and
-superuser review. The platform never executes automatically.
+Live deployment is **disabled by default** and requires: `risk_acknowledged:
+true`, an **active risk profile**, at least 30 closed paper trades, and
+superuser approval. Sandbox connections approve to `approved_sandbox_only` —
+the platform never executes automatically and has no real broker adapter.
+
+## Alerts & audit
+
+| Method | Path | Description |
+|---|---|---|
+| GET | `/alerts` | List alerts, `?unread_only=true`. |
+| GET | `/alerts/unread-count` | Count of unread alerts. |
+| POST | `/alerts/{id}/read` | Mark an alert read. |
+| POST | `/alerts/mark-all-read` | Mark all alerts read. |
+| GET | `/audit/logs` | Paginated audit log (`limit`/`offset`, `action`, `resource_type` filters). |
 
 ## Dashboard & misc
 
 | Method | Path | Description |
 |---|---|---|
-| GET | `/dashboard` | KPIs (strategies, backtests, paper P&L). |
-| GET | `/audit/events` | Audit log entries. |
+| GET | `/dashboard/overview` | KPIs (strategies, paper account, alerts, sessions, feed). |
 | GET | `/market-data/symbols` | Symbols available from CSV provider. |
 | POST | `/market-data/import` | Upload a candle CSV (multipart). |
+| GET | `/market-data/economic-calendar` | Upcoming economic events (`?days=`, `?currency=`, `?impact=`). |
+| GET | `/chart-layouts` | Saved chart layouts. |
+| POST | `/chart-layouts` | Save a layout. |
+| DELETE | `/chart-layouts/{id}` | Delete a layout. |
 | GET | `/health` | Liveness. |
 
 ## Errors

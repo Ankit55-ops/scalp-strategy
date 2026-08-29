@@ -1,26 +1,38 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
-import { api, tokenStore } from "@/lib/api";
+import { api, ApiError, tokenStore } from "@/lib/api";
 import { Badge, Card, SectionTitle, Spinner, Stat } from "@/components/ui";
-import type { PaperStatus, Strategy } from "@/types";
+import type {
+  PaperStatus,
+  PaperPosition,
+  PaperTrade,
+  Strategy,
+} from "@/types";
 
 export default function PaperPage() {
   const [status, setStatus] = useState<PaperStatus | null>(null);
   const [strategies, setStrategies] = useState<Strategy[]>([]);
   const [strategyId, setStrategyId] = useState("");
-  const [side, setSide] = useState<"buy" | "sell">("buy");
-  const [price, setPrice] = useState(1.1);
-  const [size, setSize] = useState(10000);
+  const [side, setSide] = useState<"long" | "short">("long");
+  const [size, setSize] = useState<number | undefined>(undefined);
+  const [positions, setPositions] = useState<PaperPosition[]>([]);
+  const [trades, setTrades] = useState<PaperTrade[]>([]);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<Record<string, unknown> | null>(null);
+  const [info, setInfo] = useState<string | null>(null);
 
   async function load() {
-    try {
-      setStatus(await api<PaperStatus>("/paper-trading/status", { token: tokenStore.get() }));
-    } catch {
-      setStatus(null);
-    }
+    await Promise.all([
+      api<PaperStatus>("/paper-trading/status", { token: tokenStore.get() })
+        .then(setStatus)
+        .catch(() => setStatus(null)),
+      api<PaperPosition[]>("/paper-trading/positions", { token: tokenStore.get() })
+        .then(setPositions)
+        .catch(() => setPositions([])),
+      api<PaperTrade[]>("/paper-trading/trades", { token: tokenStore.get() })
+        .then(setTrades)
+        .catch(() => setTrades([])),
+    ]);
   }
 
   useEffect(() => {
@@ -37,17 +49,35 @@ export default function PaperPage() {
   async function submit(e: FormEvent) {
     e.preventDefault();
     setError(null);
-    setResult(null);
+    setInfo(null);
     try {
-      const res = await api<Record<string, unknown>>("/paper-trading/order", {
+      const res = await api<{ approved: boolean; reason?: string; position_id?: string }>("/paper-trading/order", {
         method: "POST",
         token: tokenStore.get(),
-        body: { strategy_id: strategyId, side, symbol: "EURUSD", price, size_units: size },
+        body: {
+          strategy_id: strategyId,
+          side,
+          ...(size ? { size_units: size } : {}),
+        },
       });
-      setResult(res);
+      if (res.approved) {
+        setInfo("Order approved and opened in the simulated account.");
+      } else {
+        setError(`Order rejected by risk engine: ${res.reason ?? "unknown"}`);
+      }
       await load();
     } catch (err) {
-      setError(err instanceof Error ? err.message : "order failed (risk engine may have rejected it)");
+      setError(err instanceof ApiError ? err.message : "order failed (risk engine may have rejected it)");
+    }
+  }
+
+  async function closePosition(id: string) {
+    setError(null);
+    try {
+      await api(`/paper-trading/positions/${id}/close`, { method: "POST", token: tokenStore.get(), body: {} });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : "close failed");
     }
   }
 
@@ -70,14 +100,14 @@ export default function PaperPage() {
       <SectionTitle>Paper Trading</SectionTitle>
 
       <div className="grid grid-cols-2 lg:grid-cols-5 gap-4 mb-6">
-        <Stat label="Balance" value={`$${status.balance.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
-        <Stat label="Equity" value={`$${status.equity.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} tone={status.equity >= status.balance ? "good" : "bad"} />
+        <Stat label="Balance" value={`$${status.balance.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} />
+        <Stat label="Equity" value={`$${status.equity.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} tone={status.equity >= status.balance ? "good" : "bad"} />
         <Stat label="Open positions" value={status.open_positions} />
         <Stat label="Closed trades" value={status.closed_trades} />
         <Stat label="Mode" value={<span className="text-base"><Badge label="simulated" tone="accent" /></span>} />
       </div>
 
-      <div className="grid lg:grid-cols-2 gap-4">
+      <div className="grid lg:grid-cols-2 gap-4 mb-6">
         <Card title="Place simulated order">
           <form onSubmit={submit} className="space-y-3 text-sm">
             <label className="block">
@@ -92,36 +122,93 @@ export default function PaperPage() {
             <div className="grid grid-cols-2 gap-3">
               <label>
                 <span className="text-xs text-text-dim block mb-1">Side</span>
-                <select value={side} onChange={(e) => setSide(e.target.value as "buy" | "sell")} className="w-full rounded-lg border border-border bg-bg px-3 py-2">
-                  <option value="buy">Buy</option>
-                  <option value="sell">Sell</option>
+                <select value={side} onChange={(e) => setSide(e.target.value as "long" | "short")} className="w-full rounded-lg border border-border bg-bg px-3 py-2">
+                  <option value="long">Long</option>
+                  <option value="short">Short</option>
                 </select>
               </label>
               <label>
-                <span className="text-xs text-text-dim block mb-1">Size (units)</span>
-                <input type="number" value={size} onChange={(e) => setSize(Number(e.target.value))} className="w-full rounded-lg border border-border bg-bg px-3 py-2" />
+                <span className="text-xs text-text-dim block mb-1">Size (units, optional)</span>
+                <input type="number" value={size ?? ""} onChange={(e) => setSize(e.target.value ? Number(e.target.value) : undefined)} placeholder="auto from risk %" className="w-full rounded-lg border border-border bg-bg px-3 py-2" />
               </label>
             </div>
-            <label>
-              <span className="text-xs text-text-dim block mb-1">Reference price</span>
-              <input type="number" step="0.00001" value={price} onChange={(e) => setPrice(Number(e.target.value))} className="w-full rounded-lg border border-border bg-bg px-3 py-2" />
-            </label>
+            <p className="text-xs text-text-dim">
+              Stop/target sizing, position sizing and entry price are derived from the strategy&apos;s risk parameters
+              and the live mock quote. Every order is gated by the RiskEngine.
+            </p>
             {error && <div className="text-xs text-danger">{error}</div>}
+            {info && <div className="text-xs text-accent">{info}</div>}
             <button className="rounded-lg bg-accent/90 text-bg px-4 py-2 font-semibold hover:bg-accent">Submit order</button>
           </form>
-          {result && (
-            <pre className="mt-4 text-xs text-text-dim bg-bg rounded-lg p-3 overflow-auto">{JSON.stringify(result, null, 2)}</pre>
-          )}
         </Card>
 
-        <Card title="Risk note">
-          <p className="text-sm leading-relaxed text-text-dim">
-            Every paper order passes through the same <strong>RiskEngine</strong> as live orders would: kill switches,
-            session, news blackout, spread ceiling, stop-distance floor, open-position cap, daily loss limit and
-            correlated-exposure ceiling. A rejected order never reaches the simulated broker.
-          </p>
+        <Card title="Open positions">
+          {positions.length === 0 ? (
+            <p className="text-sm text-text-dim">No open positions.</p>
+          ) : (
+            <ul className="divide-y divide-border">
+              {positions.map((p) => (
+                <li key={p.id} className="py-2 flex items-center justify-between gap-3">
+                  <div className="min-w-0">
+                    <div className="text-sm">
+                      {p.symbol} <Badge label={p.side} tone={p.side === "long" ? "good" : "bad"} />{" "}
+                      <span className="text-text-dim text-xs">{p.size_units.toLocaleString()}u</span>
+                    </div>
+                    <div className="text-xs text-text-dim mt-0.5">
+                      @ {p.entry_price} · stop {p.stop_loss} · target {p.take_profit} · mark {p.mark_price}
+                    </div>
+                  </div>
+                  <div className="text-right shrink-0">
+                    <div className={`text-sm font-medium ${p.unrealized_pnl >= 0 ? "text-accent" : "text-danger"}`}>
+                      ${p.unrealized_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </div>
+                    <button onClick={() => closePosition(p.id)} className="text-xs text-warn underline">
+                      close
+                    </button>
+                  </div>
+                </li>
+              ))}
+            </ul>
+          )}
         </Card>
       </div>
+
+      <Card title="Trade history">
+        {trades.length === 0 ? (
+          <p className="text-sm text-text-dim">No closed trades yet.</p>
+        ) : (
+          <div className="max-h-96 overflow-auto">
+            <table className="w-full text-xs">
+              <thead className="sticky top-0 bg-panel text-text-dim">
+                <tr className="text-left">
+                  <th className="py-2 pr-3">Symbol</th>
+                  <th className="py-2 pr-3">Side</th>
+                  <th className="py-2 pr-3">Entry</th>
+                  <th className="py-2 pr-3">Exit</th>
+                  <th className="py-2 pr-3 text-right">Pips</th>
+                  <th className="py-2 pr-3 text-right">Net P&L</th>
+                  <th className="py-2">Reason</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-border">
+                {trades.map((t) => (
+                  <tr key={t.id}>
+                    <td className="py-1.5 pr-3">{t.symbol}</td>
+                    <td className="py-1.5 pr-3 capitalize">{t.side}</td>
+                    <td className="py-1.5 pr-3">{t.entry_price}</td>
+                    <td className="py-1.5 pr-3">{t.exit_price}</td>
+                    <td className="py-1.5 pr-3 text-right">{t.pips.toFixed(1)}</td>
+                    <td className={`py-1.5 pr-3 text-right ${t.net_pnl >= 0 ? "text-accent" : "text-danger"}`}>
+                      ${t.net_pnl.toLocaleString(undefined, { maximumFractionDigits: 2 })}
+                    </td>
+                    <td className="py-1.5">{t.exit_reason}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </Card>
     </div>
   );
 }

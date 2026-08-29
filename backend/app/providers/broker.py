@@ -70,7 +70,11 @@ class SimulatedBroker(BrokerProvider):
         return list(self.positions.values())
 
     def submit_order(self, order: dict, idempotency_key: str | None = None) -> dict:
-        pid = f"pos-{len(self.positions) + len(self.closed) + 1}"
+        if idempotency_key:
+            existing = self.positions.get(idempotency_key)
+            if existing:
+                return {"id": idempotency_key, "status": "submitted", "position": existing}
+        pid = idempotency_key or f"pos-{len(self.positions) + len(self.closed) + 1}"
         pos = {
             "id": pid,
             "symbol": order["symbol"],
@@ -83,3 +87,23 @@ class SimulatedBroker(BrokerProvider):
         }
         self.positions[pid] = pos
         return {"id": pid, "status": "submitted", "position": pos}
+
+    def cancel_order(self, order_id: str) -> dict:
+        pos = self.positions.pop(order_id, None)
+        return {"id": order_id, "status": "cancelled", "position": pos}
+
+    def close_position(self, position_id: str) -> dict:
+        pos = self.positions.pop(position_id, None)
+        if pos:
+            pos["status"] = "closed"
+            self.closed.append(pos)
+        return {"id": position_id, "status": "closed", "position": pos}
+
+    def get_order_status(self, order_id: str) -> dict:
+        pos = self.positions.get(order_id)
+        if pos:
+            return {"id": order_id, "status": pos["status"], "position": pos}
+        for c in self.closed:
+            if c["id"] == order_id:
+                return {"id": order_id, "status": "closed", "position": c}
+        return {"id": order_id, "status": "not_found", "position": None}

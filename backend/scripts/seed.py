@@ -162,13 +162,71 @@ def seed() -> None:
                         )
                     )
 
+        # Economic calendar events (next 30 days of synthetic high-impact events)
+        events_created = seed_economic_events(db)
+
         db.commit()
         print(
             f"Seeded: user demo@fxscalper.dev, workspace {ws.id}, "
-            f"{created} symbols, strategy {strategy.id}"
+            f"{created} symbols, strategy {strategy.id}, {events_created} events"
         )
     finally:
         db.close()
+
+
+def seed_economic_events(db) -> int:
+    from datetime import datetime, timedelta, timezone
+
+    from app.models import EconomicEvent
+
+    now = datetime.now(timezone.utc)
+    created = 0
+    # Weekly repeating synthetic events per currency.
+    n = 0
+    for currency, country in [
+        ("USD", "US"),
+        ("EUR", "EU"),
+        ("GBP", "GB"),
+        ("JPY", "JP"),
+        ("AUD", "AU"),
+        ("NZD", "NZ"),
+    ]:
+        base = now + timedelta(days=n % 3)
+        for week in range(4):
+            for day_offset, name, impact in [
+                (1, "Interest Rate Decision", "high"),
+                (3, "GDP m/m", "high"),
+                (4, "CPI y/y", "medium"),
+                (2, "PMI Flash", "low"),
+            ]:
+                event_time = base + timedelta(days=week * 7 + day_offset, hours=11, minutes=30)
+                if event_time.timestamp() < now.timestamp():
+                    continue
+                exists = (
+                    db.query(EconomicEvent)
+                    .filter(
+                        EconomicEvent.currency == currency,
+                        EconomicEvent.event_time == event_time.timestamp(),
+                        EconomicEvent.name == name,
+                    )
+                    .first()
+                )
+                if exists:
+                    continue
+                db.add(
+                    EconomicEvent(
+                        country=country,
+                        currency=currency,
+                        name=name,
+                        impact=impact,
+                        event_time=event_time.timestamp(),
+                        forecast=None,
+                        previous=None,
+                    )
+                )
+                created += 1
+        n += 1
+    return created
 
 
 if __name__ == "__main__":

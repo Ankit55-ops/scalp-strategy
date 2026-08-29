@@ -7,15 +7,12 @@ through the Pydantic StrategySpec schema, discarding any invalid output.
 
 from __future__ import annotations
 
-import copy
 import json
 
 from app.ai.llm import LLMClient, build_system_prompt
 from app.core.config import get_settings
 from app.schemas.api_strategy import StrategyGenerateRequest
 from app.schemas.strategy import StrategySpec
-
-_NUM_CANDIDATES = 3
 
 SESSION_UTC = {
     "Asian": {"name": "Asian", "start": "00:00", "end": "07:00"},
@@ -25,7 +22,7 @@ SESSION_UTC = {
 }
 
 
-def _cand(rng_seed: int, req: StrategyGenerateRequest) -> StrategySpec:
+def _cand(req: StrategyGenerateRequest, idx: int) -> StrategySpec:
     family = req.strategy_family.value
     tf = req.timeframe
     session = SESSION_UTC.get(req.session_name, SESSION_UTC["London"])
@@ -133,9 +130,7 @@ def _cand(rng_seed: int, req: StrategyGenerateRequest) -> StrategySpec:
                 {
                     "id": "long_rule_1",
                     "description": "Close breaks above prior 20-candle high",
-                    "expression": (
-                        "close > highest(high,20) and not crossunder(close, highest(high,20))"
-                    ),
+                    "expression": "close > highest(high,20)",
                 },
                 {
                     "id": "short_rule_1",
@@ -146,8 +141,8 @@ def _cand(rng_seed: int, req: StrategyGenerateRequest) -> StrategySpec:
             exit_rules=[
                 {
                     "id": "exit_rule_1",
-                    "description": "Exit when price retraces 50% of recent range",
-                    "expression": f"atr(close,{atr_period}) < atr(close,{atr_period}) and close < sma(close,5)",
+                    "description": "Exit when price retraces below the short 5-bar SMA",
+                    "expression": "close < sma(close,5)",
                 },
             ],
             risk_management={
@@ -258,36 +253,18 @@ def _cand(rng_seed: int, req: StrategyGenerateRequest) -> StrategySpec:
         )
     )
 
-    return specs[min(rng_seed % len(specs), len(specs) - 1)]
-
-
-def _vary(spec: StrategySpec, seed: int) -> StrategySpec:
-    """Produce a lightly varied copy to differentiate candidates."""
-    s = copy.deepcopy(spec)
-    if seed == 1:
-        s.name = s.name + " (Conservative)"
-        s.risk_management.risk_per_trade_pct = round(
-            min(s.risk_management.risk_per_trade_pct * 0.8, 1.0), 2
-        )
-        s.risk_management.take_profit_parameters = {
-            "risk_reward_ratio": 2.0
-        }
-    elif seed == 2:
-        s.name = s.name + " (Tight)"
-        s.risk_management.stop_loss_parameters = {
-            **s.risk_management.stop_loss_parameters,
-            "atr_multiplier": 0.9,
-        }
-        s.execution_filters.minimum_atr_pips = 4.0
-        s.plain_english_explanation = s.plain_english_explanation + " This variant tightens the stop and requires more volatility."
-    return s
+    return specs[min(idx, len(specs) - 1)]
 
 
 def generate_candidates(req: StrategyGenerateRequest) -> list[tuple[str, StrategySpec]]:
-    base = _cand(0, req)
-    candidates = [(f"cand-{0}", base)]
-    for i in range(1, _NUM_CANDIDATES):
-        candidates.append((f"cand-{i}", _vary(base, i)))
+    """Return one candidate per template family, with the requested family first."""
+    order = {
+        "trend_pullback": [0, 1, 2],
+        "breakout": [1, 0, 2],
+        "mean_reversion": [2, 0, 1],
+    }
+    idxs = order.get(req.strategy_family.value, [0, 1, 2])
+    candidates = [(f"cand-{i}", _cand(req, i)) for i in idxs]
     return candidates
 
 

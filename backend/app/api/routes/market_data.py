@@ -2,15 +2,53 @@
 
 from __future__ import annotations
 
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File
 from sqlalchemy.orm import Session
 
 from app.api.deps import get_current_user
 from app.db.session import get_db
-from app.models import User
+from app.models import EconomicEvent, User
 from app.providers.factory import get_market_data_provider
 
 router = APIRouter(prefix="/market-data", tags=["market-data"])
+
+
+@router.get("/economic-calendar", response_model=list[dict])
+def economic_calendar(
+    user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    days: int = Query(30, ge=1, le=90),
+    currency: str | None = Query(None),
+    impact: str | None = Query(None),
+) -> list[dict]:
+    import time
+    from datetime import datetime, timezone
+
+    start = datetime.now(timezone.utc).timestamp()
+    end = start + days * 86400
+    q = db.query(EconomicEvent).filter(
+        EconomicEvent.event_time >= start, EconomicEvent.event_time <= end
+    )
+    if currency:
+        q = q.filter(EconomicEvent.currency == currency.upper())
+    if impact:
+        q = q.filter(EconomicEvent.impact == impact.lower())
+    rows = q.order_by(EconomicEvent.event_time.asc()).limit(200).all()
+    return [
+        {
+            "id": e.id,
+            "country": e.country,
+            "currency": e.currency,
+            "name": e.name,
+            "impact": e.impact,
+            "event_time": e.event_time,
+            "event_time_iso": datetime.fromtimestamp(e.event_time, tz=timezone.utc).isoformat(),
+            "actual": e.actual,
+            "forecast": e.forecast,
+            "previous": e.previous,
+        }
+        for e in rows
+    ]
 
 
 @router.get("/symbols", response_model=list[dict])
