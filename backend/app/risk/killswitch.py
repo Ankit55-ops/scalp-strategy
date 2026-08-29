@@ -47,6 +47,17 @@ class KillSwitchRegistry:
                 pass
         return self._mem.get(key, False)
 
+    def reset(self) -> None:
+        """Clear all kill-switch state (Redis-prefixed keys or memory)."""
+        if self._redis is not None:
+            try:
+                for key in self._redis.scan_iter("ks:*"):
+                    self._redis.delete(key)
+                return
+            except Exception:
+                pass
+        self._mem.clear()
+
     # -- scopes ------------------------------------------------------------
     def set_global(self, enabled: bool) -> None:
         self._set("ks:global", enabled)

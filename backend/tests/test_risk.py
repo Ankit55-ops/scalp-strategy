@@ -2,6 +2,16 @@ from app.models import RiskProfile
 from app.risk.engine import ProposedOrder, RiskEngine
 from app.risk.killswitch import KillSwitchRegistry
 
+import pytest
+
+
+@pytest.fixture(autouse=True)
+def _reset_killswitches():
+    registry = KillSwitchRegistry()
+    registry.reset()
+    yield
+    registry.reset()
+
 
 def make_profile(**overrides):
     defaults = dict(
@@ -111,11 +121,12 @@ def test_correlated_exposure_rejection():
 
 
 def test_min_stop_distance_rejection():
-    engine = RiskEngine(KillSwitchRegistry(), make_profile(hard_stop_distance_pips=5.0))
     # stop distance = 20 pips (>= 5) OK
+    engine = RiskEngine(KillSwitchRegistry(), make_profile(hard_stop_distance_pips=5.0, max_open_positions=10))
     assert engine.evaluate(order(entry_price=1.1000, stop_price=1.0995)).approved is True
-    # stop distance = 2 pips (< 5) rejects
-    decision = engine.evaluate(order(entry_price=1.1000, stop_price=1.0998))
+    # fresh engine, stop distance = 2 pips (< 5) rejects
+    engine2 = RiskEngine(KillSwitchRegistry(), make_profile(hard_stop_distance_pips=5.0, max_open_positions=10))
+    decision = engine2.evaluate(order(entry_price=1.1000, stop_price=1.0998))
     assert decision.approved is False
     assert "stop distance" in decision.rejection_reason
 

@@ -29,6 +29,17 @@ from app.services.market_math import position_size
 
 WINDOW = 400
 
+TIMEFRAME_SECONDS = {
+    "M1": 60,
+    "M5": 300,
+    "M15": 900,
+    "M30": 1800,
+    "H1": 3600,
+    "H4": 14400,
+    "D1": 86400,
+    "W1": 604800,
+}
+
 
 @dataclass
 class Position:
@@ -129,6 +140,40 @@ class Backtester:
         except ExpressionError:
             return False
         return bool(result)
+
+    # -- data quality --------------------------------------------------------
+    @staticmethod
+    def validate_data(df, timeframe: str, raise_missing: bool = False) -> None:
+        for col in ("open", "high", "low", "close"):
+            vals = df[col]
+            if df[col].isna().any():
+                raise BacktestDataError(f"missing {col} price (NA) in candle data")
+            bad = vals[~pd.to_numeric(vals, errors="coerce").notna()]
+            if not bad.empty:
+                raise BacktestDataError(f"non-finite {col} price in candle data")
+            bad_nonzero = df[(vals <= 0) & (df["close"].notna())]
+            if not bad_nonzero.empty:
+                raise BacktestDataError(f"non-positive {col} price in candle data")
+        bad_hl = df[df["high"] < df["low"]]
+        if not bad_hl.empty:
+            raise BacktestDataError("high < low on one or more candles")
+        bad_hc = df[df["high"] < pd.concat([df["open"], df["close"]], axis=1).max(axis=1)]
+        if not bad_hc.empty:
+            raise BacktestDataError("high below open/close on one or more candles")
+        bad_lc = df[df["low"] > pd.concat([df["open"], df["close"]], axis=1).min(axis=1)]
+        if not bad_lc.empty:
+            raise BacktestDataError("low above open/close on one or more candles")
+
+        if raise_missing and len(df) > 1:
+            expected = TIMEFRAME_SECONDS.get(timeframe)
+            if expected:
+                gaps = df["ts"].diff().dropna()
+                bad = gaps[gaps > expected * 1.5]
+                if not bad.empty:
+                    missing = int(len(bad))
+                    raise BacktestDataError(
+                        f"missing candles detected ({missing} gaps > {expected}s)"
+                    )
 
     # -- main --------------------------------------------------------------
     def run(

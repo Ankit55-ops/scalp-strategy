@@ -28,8 +28,8 @@ def test_price_to_pips_conversion():
 
 
 def test_spread_in_pips():
-    assert spread_in_pips(1.1000, 1.1001, 0.0001) == 1.0
-    assert spread_in_pips(150.00, 150.02, 0.01) == 2.0
+    assert spread_in_pips(1.1000, 1.1001, 0.0001) == pytest.approx(1.0, abs=1e-9)
+    assert spread_in_pips(150.00, 150.02, 0.01) == pytest.approx(2.0, abs=1e-9)
 
 
 def test_position_sizing_risk_matches():
