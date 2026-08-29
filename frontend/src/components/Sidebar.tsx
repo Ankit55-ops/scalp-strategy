@@ -7,6 +7,7 @@ const NAV = [
   { href: "/strategies", label: "Strategies", icon: "◈" },
   { href: "/backtests", label: "Backtest Lab", icon: "◉" },
   { href: "/paper", label: "Paper Trading", icon: "≋" },
+  { href: "/market-data", label: "Market Data", icon: "◔" },
   { href: "/risk", label: "Risk Center", icon: "⛨" },
   { href: "/settings", label: "Settings", icon: "⚙" },
 ];

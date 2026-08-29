@@ -1,11 +1,35 @@
 from __future__ import annotations
 
-from sqlalchemy import Boolean, Float, ForeignKey, String, Text
+from sqlalchemy import Boolean, Float, ForeignKey, String, Text, UniqueConstraint
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.session import Base
 from app.models.base import TimestampMixin, UUIDPrimaryKeyMixin
+
+
+class KillSwitch(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    """Persisted, workspace-scoped kill-switch state.
+
+    One row per (workspace, scope, resource). Resource id for the global scope
+    is the constant string ``"global"``. An engaged switch blocks new entries
+    and must be explicitly disarmed by an operator (or an automated monitor).
+    """
+
+    __tablename__ = "kill_switches"
+    __table_args__ = (
+        UniqueConstraint(
+            "workspace_id", "scope", "resource_id", name="uq_kill_switch_ws_scope_res"
+        ),
+    )
+
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    scope: Mapped[str] = mapped_column(String(16), index=True)
+    resource_id: Mapped[str] = mapped_column(String(64), default="global")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    reason: Mapped[str | None] = mapped_column(String(255), nullable=True)
 
 
 class RiskProfile(Base, UUIDPrimaryKeyMixin, TimestampMixin):

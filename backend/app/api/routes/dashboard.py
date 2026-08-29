@@ -8,9 +8,9 @@ from app.backtest.sessions import in_session
 from app.core.config import get_settings
 from app.db.session import get_db
 from app.models import Alert, RiskEvent, Strategy, User, Workspace
-from app.providers.factory import get_market_data_provider
 from app.risk.killswitch import KillSwitchRegistry
 from app.schemas.strategy import SessionWindow
+from app.services.provider_service import get_active_provider
 
 router = APIRouter(prefix="/dashboard", tags=["dashboard"])
 
@@ -40,7 +40,7 @@ def dashboard_overview(
     risk_events = db.query(RiskEvent).filter(
         RiskEvent.workspace_id == ws.id
     ).count()
-    feed = get_market_data_provider()
+    feed = get_active_provider(db, ws.id)
     symbols = feed.list_symbols()
 
     paper_acc = (
@@ -88,7 +88,7 @@ def dashboard_overview(
         "risk_events": risk_events,
         "sessions": open_sessions,
         "data_feed": {"provider": feed.name, "symbols": len(symbols), "ok": True},
-        "kill_switch": KillSwitchRegistry().is_global_halted(),
+        "kill_switch": KillSwitchRegistry(db=db, workspace_id=ws.id).is_global_halted(),
         "utc_now": datetime.now(timezone.utc).isoformat(),
         "config": {"app_env": get_settings().APP_ENV, "llm_provider": get_settings().LLM_PROVIDER},
     }
@@ -97,6 +97,8 @@ def dashboard_overview(
 @router.get("/symbols", response_model=list[dict])
 def list_symbols(
     user: User = Depends(get_current_user),
+    db: Session = Depends(get_db),
+    ws: Workspace = Depends(get_current_workspace),
 ) -> list[dict]:
-    feed = get_market_data_provider()
+    feed = get_active_provider(db, ws.id)
     return [{"canonical": s, "provider": feed.name} for s in feed.list_symbols()]

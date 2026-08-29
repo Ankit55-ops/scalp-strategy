@@ -1,11 +1,23 @@
 from app.models.user import User, Workspace
 from app.models.broker import BrokerConnection, ForexSymbol, MarketDataSource
-from app.models.market import Candle, Tick, Spread, EconomicEvent
+from app.models.market import (
+    Candle,
+    EconomicEvent,
+    InstrumentMapping,
+    MarketDataGap,
+    MarketFeedHealth,
+    ProviderConnection,
+    ProviderCredential,
+    Spread,
+    StrategySignalEvent,
+    Tick,
+)
 from app.models.strategy import Strategy, StrategyVersion, StrategyRule
 from app.models.backtest import BacktestJob, BacktestRun, BacktestMetric
 from app.models.orders import SimulatedOrder, SimulatedFill
 from app.models.paper import PaperAccount, PaperPosition
-from app.models.risk import RiskProfile, RiskEvent, AuditLog, Alert, SavedChartLayout
+from app.models.paper_live import PaperFill, PaperMarginEvent, PaperOrder
+from app.models.risk import KillSwitch, RiskProfile, RiskEvent, AuditLog, Alert, SavedChartLayout
 from app.models.deployment import LiveDeploymentRequest
 
 __all__ = [
@@ -18,6 +30,12 @@ __all__ = [
     "Tick",
     "Spread",
     "EconomicEvent",
+    "ProviderCredential",
+    "ProviderConnection",
+    "InstrumentMapping",
+    "MarketFeedHealth",
+    "MarketDataGap",
+    "StrategySignalEvent",
     "Strategy",
     "StrategyVersion",
     "StrategyRule",
@@ -28,8 +46,12 @@ __all__ = [
     "SimulatedFill",
     "PaperAccount",
     "PaperPosition",
+    "PaperOrder",
+    "PaperFill",
+    "PaperMarginEvent",
     "RiskProfile",
     "RiskEvent",
+    "KillSwitch",
     "AuditLog",
     "Alert",
     "SavedChartLayout",

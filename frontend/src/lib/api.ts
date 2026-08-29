@@ -44,24 +44,67 @@ export async function api<T>(
   return text ? (JSON.parse(text) as T) : ({} as T);
 }
 
+// Token storage: sessionStorage only (tab-scoped, cleared when the tab closes),
+// backed by a module-level variable as a fallback so the token survives even if
+// storage is unavailable. NEVER persisted to localStorage - XSS-safe by design.
 const TOKEN_KEY = "fxscalper_token";
 const EMAIL_KEY = "fxscalper_email";
 
+let memoryToken: string | null = null;
+let memoryEmail: string | null = null;
+
+function storageGet(key: string): string | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.sessionStorage.getItem(key);
+  } catch {
+    return null;
+  }
+}
+
+function storageSet(key: string, value: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.setItem(key, value);
+  } catch {
+    /* private-mode storage may be unavailable; in-memory copy still holds it */
+  }
+}
+
+function storageRemove(key: string): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.sessionStorage.removeItem(key);
+  } catch {
+    /* ignore */
+  }
+}
+
 export const tokenStore = {
   get: (): string | null => {
-    if (typeof window === "undefined") return null;
-    return window.localStorage.getItem(TOKEN_KEY);
+    if (memoryToken !== null) return memoryToken;
+    const stored = storageGet(TOKEN_KEY);
+    if (stored) memoryToken = stored;
+    return stored;
   },
   set: (token: string) => {
-    window.localStorage.setItem(TOKEN_KEY, token);
+    memoryToken = token;
+    storageSet(TOKEN_KEY, token);
   },
   clear: () => {
-    window.localStorage.removeItem(TOKEN_KEY);
-    window.localStorage.removeItem(EMAIL_KEY);
+    memoryToken = null;
+    memoryEmail = null;
+    storageRemove(TOKEN_KEY);
+    storageRemove(EMAIL_KEY);
   },
   getEmail: (): string | null => {
-    if (typeof window === "undefined") return null;
-    return window.localStorage.getItem(EMAIL_KEY);
+    if (memoryEmail !== null) return memoryEmail;
+    const stored = storageGet(EMAIL_KEY);
+    if (stored) memoryEmail = stored;
+    return stored;
   },
-  setEmail: (email: string) => window.localStorage.setItem(EMAIL_KEY, email),
+  setEmail: (email: string) => {
+    memoryEmail = email;
+    storageSet(EMAIL_KEY, email);
+  },
 };

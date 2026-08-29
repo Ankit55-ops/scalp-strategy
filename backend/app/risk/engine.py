@@ -177,6 +177,40 @@ class RiskEngine:
                     order, checks, correlation_id, "daily loss limit breached"
                 )
 
+        # Weekly loss limit
+        if self._week_start_equity is not None:
+            week_loss = (
+                (self._week_start_equity - order.account_equity)
+                / max(self._week_start_equity, 1e-9)
+                * 100
+            )
+            check(
+                "weekly_loss_limit",
+                week_loss < profile.max_weekly_loss_pct,
+                f"week loss {week_loss:.2f}% < {profile.max_weekly_loss_pct}%",
+            )
+            if week_loss >= profile.max_weekly_loss_pct:
+                return self._reject(
+                    order, checks, correlation_id, "weekly loss limit breached"
+                )
+
+        # Peak drawdown
+        if self._peak_equity is not None:
+            drawdown = (
+                (self._peak_equity - order.account_equity)
+                / max(self._peak_equity, 1e-9)
+                * 100
+            )
+            check(
+                "max_drawdown",
+                drawdown < profile.max_drawdown_pct,
+                f"drawdown {drawdown:.2f}% < {profile.max_drawdown_pct}%",
+            )
+            if drawdown >= profile.max_drawdown_pct:
+                return self._reject(
+                    order, checks, correlation_id, "max drawdown breached"
+                )
+
         # Consecutive losses
         check(
             "max_consecutive_losses",

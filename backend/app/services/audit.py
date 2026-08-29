@@ -49,11 +49,14 @@ class AuditService:
         return entry
 
     def record_risk_decision(self, workspace_id: str | None, audit: dict) -> AuditLog:
+        # Risk decisions are system-generated (risk engine / paper trader); the
+        # actor is the engine itself, not the strategy. strategy_id stays in the
+        # payload for traceability instead of being mislabeled as an actor.
         return self.record(
             workspace_id=workspace_id,
-            actor_id=audit.get("strategy_id"),
+            actor_id=None,
             action="risk_decision",
             resource_type="order",
             resource_id=audit.get("correlation_id"),
-            payload=audit,
+            payload={**audit, "source": "risk_engine"},
         )

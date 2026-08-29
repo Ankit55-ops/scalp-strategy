@@ -28,6 +28,22 @@ router = APIRouter(prefix="/live-deployments", tags=["live-deployments"])
 MIN_PAPER_TRADES = 30
 
 
+@router.get("/config", response_model=dict)
+def live_trading_config(
+    user: User = Depends(get_current_user),
+) -> dict:
+    from app.core.config import get_settings
+
+    s = get_settings()
+    return {
+        "live_trading_enabled": bool(s.LIVE_TRADING_ENABLED),
+        "practice_broker_dry_run": bool(s.BROKER_PRACTICE_DRY_RUN),
+        "broker_provider": s.BROKER_PROVIDER,
+        "market_data_provider": getattr(s, "MARKET_DATA_PROVIDER", "mock"),
+        "note": "live execution is globally disabled by default; enable with LIVE_TRADING_ENABLED",
+    }
+
+
 def _paper_trade_count(db: Session, ws: Workspace) -> int:
     account = (
         db.query(PaperAccount)
@@ -230,10 +246,31 @@ def approve_deployment(
             "reasons": unmet,
         }
     # Sandbox-only live enablement. Real broker execution is intentionally
-    # unsupported until a non-sandbox adapter is configured.
+    # gated: practice (sandbox) accounts approve to `approved_sandbox_only`;
+    # non-sandbox execution only when the master LIVE_TRADING_ENABLED flag is on.
+    from app.core.config import get_settings
+
+    settings = get_settings()
     broker = db.get(BrokerConnection, deployment.broker_connection_id)
     if broker and broker.is_sandbox:
         deployment.status = "approved_sandbox_only"
+    elif not settings.LIVE_TRADING_ENABLED:
+        deployment.status = "blocked"
+        db.commit()
+        AuditService(db).record(
+            workspace_id=ws.id,
+            actor_id=user.id,
+            action="live_deployment_block",
+            resource_type="live_deployment_request",
+            resource_id=deployment.id,
+            payload={"reasons": ["live trading is disabled (LIVE_TRADING_ENABLED=false)"]},
+        )
+        return {
+            "id": deployment.id,
+            "status": deployment.status,
+            "approved": False,
+            "reasons": ["live trading is disabled (LIVE_TRADING_ENABLED=false)"],
+        }
     else:
         deployment.status = "approved"
     db.commit()

@@ -26,7 +26,10 @@ def start_paper_trading(
     db: Session = Depends(get_db),
 ) -> PaperStatus:
     svc = PaperTradingService(db)
-    svc.start(ws.id, payload.balance)
+    try:
+        svc.start(ws.id, payload.balance)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     return PaperStatus(**svc.status(ws.id))
 
 
@@ -118,6 +121,47 @@ def list_closed_trades(
 ) -> list[dict]:
     svc = PaperTradingService(db)
     return svc.closed_trades(ws.id, limit=limit)
+
+
+@router.get("/orders", response_model=list[dict])
+def list_paper_orders(
+    user: User = Depends(get_current_user),
+    ws: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+    status: str | None = Query(None),
+) -> list[dict]:
+    return PaperTradingService(db).paper_orders(ws.id, limit=limit, status=status)
+
+
+@router.get("/fills", response_model=list[dict])
+def list_paper_fills(
+    user: User = Depends(get_current_user),
+    ws: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[dict]:
+    return PaperTradingService(db).paper_fills(ws.id, limit=limit)
+
+
+@router.get("/margin-events", response_model=list[dict])
+def list_margin_events(
+    user: User = Depends(get_current_user),
+    ws: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+    limit: int = Query(100, ge=1, le=500),
+) -> list[dict]:
+    return PaperTradingService(db).margin_events(ws.id, limit=limit)
+
+
+@router.get("/account-state", response_model=PaperStatus)
+def account_state(
+    user: User = Depends(get_current_user),
+    ws: Workspace = Depends(get_current_workspace),
+    db: Session = Depends(get_db),
+) -> PaperStatus:
+    svc = PaperTradingService(db)
+    return PaperStatus(**svc.status(ws.id))
 
 
 @router.get("/signals", response_model=dict)

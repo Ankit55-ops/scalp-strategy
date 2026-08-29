@@ -53,7 +53,19 @@ class TokenizeError(Exception):
     pass
 
 
+def _dsl_caps() -> tuple[int, int]:
+    from app.core.config import get_settings
+
+    s = get_settings()
+    return s.MAX_EXPRESSION_LENGTH, s.MAX_EXPRESSION_TOKENS
+
+
 def tokenize(expr: str) -> list[Token]:
+    max_len, max_tokens = _dsl_caps()
+    if len(expr) > max_len:
+        raise TokenizeError(
+            f"expression exceeds {max_len} character limit"
+        )
     tokens: list[Token] = []
     i = 0
     n = len(expr)
@@ -124,5 +136,7 @@ def tokenize(expr: str) -> list[Token]:
             i = j
             continue
         raise TokenizeError(f"unexpected character '{ch}' at {i}")
+    if len(tokens) > max_tokens:
+        raise TokenizeError(f"expression exceeds {max_tokens} token limit")
     tokens.append(Token(TOKEN_TYPES["EOF"], None, n))
     return tokens

@@ -30,14 +30,14 @@ services:
       context: ../backend
       dockerfile: Dockerfile
     environment:
+      APP_ENV: "${APP_ENV:-development}"
+      SECRET_KEY: "${SECRET_KEY:?Set SECRET_KEY (openssl rand -hex 32) or the backend will refuse to start}"
+      DATA_ENCRYPTION_KEY: "${DATA_ENCRYPTION_KEY:?Set DATA_ENCRYPTION_KEY (see docs/SECURITY_HARDENING_GUIDE.md)}"
       DATABASE_URL: postgresql+psycopg://fxscalper:fxscalper_dev_password@db:5432/fxscalper
       REDIS_URL: redis://redis:6379/0
-      JWT_SECRET_KEY: change-me-in-production
-      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-c2NhbGVyLXJvY2tzLXNjYWxlci1yb2Nrcy1zY2FsZXItcm9jaw==}"
-      ENVIRONMENT: development
+      CORS_ORIGINS: '["http://localhost:3000"]'
       MARKET_DATA_PROVIDER: mock
       BACKTEST_ASYNC: "true"
-      CORS_ORIGINS: '["http://localhost:3000"]'
     ports:
       - "8000:8000"
     depends_on:
@@ -53,11 +53,11 @@ services:
       context: ../backend
       dockerfile: Dockerfile
     environment:
+      APP_ENV: "${APP_ENV:-development}"
+      SECRET_KEY: "${SECRET_KEY:?}"
+      DATA_ENCRYPTION_KEY: "${DATA_ENCRYPTION_KEY:?}"
       DATABASE_URL: postgresql+psycopg://fxscalper:fxscalper_dev_password@db:5432/fxscalper
       REDIS_URL: redis://redis:6379/0
-      JWT_SECRET_KEY: change-me-in-production
-      ENCRYPTION_KEY: "${ENCRYPTION_KEY:-c2NhbGVyLXJvY2tzLXNjYWxlci1yb2Nrcy1zY2FsZXItcm9jaw==}"
-      ENVIRONMENT: development
       MARKET_DATA_PROVIDER: mock
     depends_on:
       db:

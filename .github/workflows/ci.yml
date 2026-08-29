@@ -47,11 +47,15 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt
+          pip install ruff bandit pip-audit
 
       - name: Compile check (imports)
         working-directory: backend
         env:
           DATABASE_URL: postgresql+psycopg://fxscalper:fxscalper_dev_password@localhost:5432/fxscalper
+          SECRET_KEY: ci-secret-key-with-32-characters-minimum-abc
+          DATA_ENCRYPTION_KEY: not-needed-in-test-env
+          APP_ENV: test
         run: python -c "import app.main; print('imports OK')"
 
       - name: Run tests
@@ -59,19 +63,29 @@ jobs:
         env:
           DATABASE_URL: postgresql+psycopg://fxscalper:fxscalper_dev_password@localhost:5432/fxscalper
           REDIS_URL: redis://localhost:6379/0
-          JWT_SECRET_KEY: ci-secret-key
-          ENVIRONMENT: test
+          SECRET_KEY: ci-secret-key-with-32-characters-minimum-abc
+          APP_ENV: test
         run: |
           pytest -q
 
       - name: Lint (ruff)
         working-directory: backend
         run: |
-          pip install ruff
           ruff check app tests || true
 
+      - name: Security scan (bandit)
+        working-directory: backend
+        run: |
+          bandit -r app -f json -o bandit.json || true
+          python -c "import json,sys; r=json.load(open('bandit.json')); bad=[r for r in r['results'] if r['issue_severity']=='HIGH']; sys.exit(1 if bad else 0)" || { echo "High-severity bandit findings"; exit 1; }
+
+      - name: Dependency audit (pip-audit)
+        working-directory: backend
+        run: |
+          pip-audit || true
+
   frontend:
-    name: Frontend lint + build
+    name: Frontend lint + build + audit
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -86,3 +100,5 @@ jobs:
       - run: npm ci
       - run: npm run lint
       - run: npm run build
+      - name: Dependency audit (npm)
+        run: npm audit || true

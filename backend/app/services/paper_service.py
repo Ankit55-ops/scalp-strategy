@@ -9,15 +9,21 @@ and surfaced as alerts.
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.backtest.sessions import in_session, is_blackout
+from app.core.config import get_settings
 from app.models import (
     Alert,
     PaperAccount,
+    PaperFill,
+    PaperMarginEvent,
+    PaperOrder,
     PaperPosition,
     RiskEvent,
     RiskProfile,
@@ -25,12 +31,17 @@ from app.models import (
     SimulatedOrder,
     Strategy,
 )
-from app.providers.factory import get_broker_provider, get_market_data_provider
+from app.providers.factory import get_broker_provider
 from app.risk.engine import ProposedOrder, RiskEngine
 from app.risk.killswitch import KillSwitchRegistry
 from app.schemas.strategy import StrategySpec
+from app.services import feed_health
 from app.services.audit import AuditService
 from app.services.market_math import pip_size
+from app.services.money import add as money_add
+from app.services.money import sub as money_sub
+from app.services.paper_broker import PaperBroker
+from app.services.provider_service import get_active_provider
 
 
 @dataclass
@@ -43,10 +54,13 @@ class OrderResult:
 
 
 class PaperTradingService:
-    def __init__(self, db: Session) -> None:
+    def __init__(self, db: Session, slippage_pips: float = 0.1) -> None:
         self.db = db
-        self.md = get_market_data_provider("mock")
         self.broker = get_broker_provider("simulated")
+        self.paper_broker = PaperBroker(slippage_pips=slippage_pips)
+
+    def _md(self, workspace_id: str):
+        return get_active_provider(self.db, workspace_id)
 
     # -- account -----------------------------------------------------------
     def ensure_account(self, workspace_id: str) -> PaperAccount:
@@ -62,11 +76,40 @@ class PaperTradingService:
             self.db.refresh(acc)
         return acc
 
+    def _account_locked(self, workspace_id: str) -> PaperAccount:
+        """Fetch the account with SELECT ... FOR UPDATE so concurrent order
+        placement and position closing serialize on the same row."""
+        acc = self.db.execute(
+            select(PaperAccount)
+            .where(PaperAccount.workspace_id == workspace_id)
+            .with_for_update()
+        ).scalar_one_or_none()
+        if acc is None:
+            acc = PaperAccount(workspace_id=workspace_id, balance=100000.0, equity=100000.0)
+            self.db.add(acc)
+            self.db.flush()
+            acc = self.db.execute(
+                select(PaperAccount)
+                .where(PaperAccount.workspace_id == workspace_id)
+                .with_for_update()
+            ).scalar_one()
+        return acc
+
     def start(self, workspace_id: str, balance: float = 100000.0) -> PaperAccount:
-        acc = self.ensure_account(workspace_id)
+        settings = get_settings()
+        if not math.isfinite(balance) or not (
+            settings.PAPER_MIN_BALANCE <= balance <= settings.PAPER_MAX_BALANCE
+        ):
+            raise ValueError(
+                f"balance must be a finite number between {settings.PAPER_MIN_BALANCE:,.0f} "
+                f"and {settings.PAPER_MAX_BALANCE:,.0f}"
+            )
+        acc = self._account_locked(workspace_id)
         acc.balance = balance
         acc.equity = balance
         acc.is_active = True
+        acc.trading_state = "ACTIVE"
+        acc.state_reason = None
         acc.started_at = datetime.now(timezone.utc).timestamp()
         self.db.commit()
         self.db.refresh(acc)
@@ -75,6 +118,8 @@ class PaperTradingService:
     def stop(self, workspace_id: str, close_positions: bool = True) -> PaperAccount:
         acc = self.ensure_account(workspace_id)
         acc.is_active = False
+        acc.trading_state = "INACTIVE"
+        acc.state_reason = "paper trading stopped"
         if close_positions:
             positions = self._open_positions(acc.id)
             for pos in positions:
@@ -94,13 +139,102 @@ class PaperTradingService:
             )
             .count()
         )
+        state, reason = self.evaluate_trading_state(acc)
+        acc.trading_state = state
+        acc.state_reason = reason
+        self.db.commit()
         return {
             "is_active": acc.is_active,
             "balance": round(acc.balance, 2),
             "equity": round(acc.equity, 2),
             "open_positions": open_count,
             "closed_trades": closed_count,
+            "trading_state": state,
+            "state_reason": reason,
+            "pending_orders": round(self._pending_order_count(acc.id), 0),
         }
+
+    # -- account state machine -------------------------------------------
+    def evaluate_trading_state(self, acc: PaperAccount) -> tuple[str, str | None]:
+        """Resolve the paper-account state: ACTIVE | INACTIVE | RISK_PAUSED | DATA_PAUSED | KILL_SWITCHED."""
+        if not acc.is_active:
+            return "INACTIVE", "paper trading stopped"
+        try:
+            ks = KillSwitchRegistry(db=self.db, workspace_id=acc.workspace_id)
+            if ks.is_global_halted():
+                return "KILL_SWITCHED", "global kill switch is on"
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            stale = feed_health.stale_supported_symbols(self.db, acc.workspace_id)
+            involved = {p.symbol for p in self._open_positions(acc.id).all()}
+            involved |= self._active_strategy_symbols(acc.workspace_id)
+            if stale & involved:
+                return "DATA_PAUSED", f"stale or disconnected feed for {', '.join(sorted(stale & involved))}"
+        except Exception:  # noqa: BLE001
+            pass
+        profile = self._active_profile(acc.workspace_id)
+        if profile is not None:
+            try:
+                now_ts = datetime.now(timezone.utc).timestamp()
+                self._rollover_account(acc, now_ts)
+                equity = self._equity(acc)
+                peak = acc.equity_peak or equity
+                drawdown_pct = ((peak - equity) / peak * 100.0) if peak > 0 else 0.0
+                day_loss_pct = self._loss_pct(acc.day_start_equity, equity)
+                week_loss_pct = self._loss_pct(acc.week_start_equity, equity)
+                cons = self._consecutive_losses(acc.id)
+                if day_loss_pct >= profile.max_daily_loss_pct:
+                    return "RISK_PAUSED", f"daily loss limit reached ({day_loss_pct:.2f}% >= {profile.max_daily_loss_pct}%)"
+                if week_loss_pct >= profile.max_weekly_loss_pct:
+                    return "RISK_PAUSED", f"weekly loss limit reached ({week_loss_pct:.2f}% >= {profile.max_weekly_loss_pct}%)"
+                if drawdown_pct >= profile.max_drawdown_pct:
+                    return "RISK_PAUSED", f"max drawdown reached ({drawdown_pct:.2f}% >= {profile.max_drawdown_pct}%)"
+                if cons >= int(profile.max_consecutive_losses or 0):
+                    return "RISK_PAUSED", f"max consecutive losses reached ({cons} >= {int(profile.max_consecutive_losses or 0)})"
+            except Exception:  # noqa: BLE001
+                pass
+        return "ACTIVE", None
+
+    def _loss_pct(self, start_equity: float | None, equity: float) -> float:
+        if not start_equity:
+            return 0.0
+        return max(0.0, (start_equity - equity) / start_equity * 100.0)
+
+    def _active_strategy_symbols(self, workspace_id: str) -> set[str]:
+        syms: set[str] = set()
+        rows = self.db.query(Strategy).filter(Strategy.workspace_id == workspace_id, Strategy.status == "active").all()
+        for s in rows:
+            try:
+                syms.add(StrategySpec.model_validate(s.spec).supported_pairs[0].upper())
+            except Exception:  # noqa: BLE001
+                continue
+        return syms
+
+    def _pending_order_count(self, account_id: str) -> int:
+        return (
+            self.db.query(PaperOrder)
+            .filter(PaperOrder.account_id == account_id, PaperOrder.status == "PENDING")
+            .count()
+        )
+
+    def _record_margin_event(self, acc: PaperAccount, event_type: str, detail: str | None, meta: dict | None = None) -> None:
+        now_ts = datetime.now(timezone.utc).timestamp()
+        peak = acc.equity_peak or acc.equity
+        drawdown_pct = ((peak - acc.equity) / peak * 100.0) if peak > 0 else 0.0
+        self.db.add(
+            PaperMarginEvent(
+                account_id=acc.id,
+                ts=now_ts,
+                event_type=event_type,
+                detail=detail,
+                balance=round(acc.balance, 4),
+                equity=round(acc.equity, 4),
+                drawdown_pct=round(drawdown_pct, 4),
+                trading_state=acc.trading_state,
+                meta=meta,
+            )
+        )
 
     # -- positions ---------------------------------------------------------
     def _open_positions(self, account_id: str):
@@ -110,9 +244,10 @@ class PaperTradingService:
 
     def open_positions(self, workspace_id: str) -> list[dict]:
         acc = self.ensure_account(workspace_id)
+        md = self._md(workspace_id)
         out = []
         for pos in self._open_positions(acc.id).all():
-            quote = self.md.get_latest_quote(pos.symbol)
+            quote = md.get_latest_quote(pos.symbol)
             mark = quote["bid"] if pos.side == "long" else quote["ask"]
             if pos.side == "long":
                 unrealized = (mark - pos.entry_price) * pos.size_units
@@ -131,6 +266,7 @@ class PaperTradingService:
                     "take_profit": round(pos.take_profit, 5),
                     "open_ts": pos.open_ts,
                     "unrealized_pnl": round(unrealized, 4),
+                    "mode": "PAPER",
                 }
             )
         return out
@@ -177,9 +313,17 @@ class PaperTradingService:
         size_units: float | None = None,
         account_balance: float | None = None,
     ) -> OrderResult:
-        acc = self.ensure_account(workspace_id)
+        acc = self._account_locked(workspace_id)
         if not acc.is_active:
             return OrderResult(approved=False, position=None, order=None, reason="paper account not active")
+        state, state_reason = self.evaluate_trading_state(acc)
+        if state != "ACTIVE":
+            return OrderResult(
+                approved=False,
+                position=None,
+                order=None,
+                reason=f"paper account is {state}: {state_reason}" if state_reason else f"paper account is {state}",
+            )
 
         strategy = self.db.get(Strategy, strategy_id)
         if strategy is None or strategy.workspace_id != workspace_id:
@@ -188,15 +332,27 @@ class PaperTradingService:
         symbol = spec.supported_pairs[0]
         side = "long" if side in ("long", "buy") else "short"
 
-        quote = self.md.get_latest_quote(symbol)
-        if side == "long":
-            entry_price = quote["ask"]
-        else:
-            entry_price = quote["bid"]
+        quote = feed_health.get_quote(self.db, workspace_id, symbol)
+        if quote.get("is_stale") or quote.get("feed_state") in ("STALE", "DISCONNECTED", "CONNECTING"):
+            return OrderResult(
+                approved=False,
+                position=None,
+                order=None,
+                reason=f"{symbol} market data is not fresh (feed={quote.get('feed_state')}); order blocked",
+            )
+        if quote.get("market_status") not in ("open", "unknown"):
+            return OrderResult(
+                approved=False,
+                position=None,
+                order=None,
+                reason=f"market closed ({quote.get('market_status')}); paper orders paused",
+            )
+
+        entry_price = self.paper_broker.entry_price(quote, side)
 
         # Compute stop/target from the strategy risk parameters.
         atr_period = spec.risk_management.stop_loss_parameters.get("atr_period", 14)
-        atr_val = self._atr(symbol, atr_period)
+        atr_val = self._atr(workspace_id, symbol, atr_period)
         stop_dist = self._stop_dist(spec, atr_val)
         target_dist = self._target_dist(spec, stop_dist)
         if side == "long":
@@ -211,12 +367,40 @@ class PaperTradingService:
             size_units = risk_amount / risked_per_unit if risked_per_unit > 0 else 0.0
         if size_units <= 0:
             return OrderResult(approved=False, position=None, order=None, reason="invalid size")
+        if not math.isfinite(size_units):
+            return OrderResult(approved=False, position=None, order=None, reason="invalid size")
+        settings = get_settings()
+        max_notional = acc.balance * settings.PAPER_MAX_LEVERAGE
+        if size_units * entry_price > max_notional:
+            return OrderResult(
+                approved=False,
+                position=None,
+                order=None,
+                reason=(
+                    f"position notional {size_units * entry_price:.2f} exceeds "
+                    f"{settings.PAPER_MAX_LEVERAGE:g}x leverage cap "
+                    f"({max_notional:.2f})"
+                ),
+            )
 
         now_ts = datetime.now(timezone.utc).timestamp()
         events = self._economic_events()
         profile = self._active_profile(workspace_id)
-        engine = RiskEngine(killswitch=KillSwitchRegistry(), profile=profile)
+        self._rollover_account(acc, now_ts)
+        self.db.flush()
+        engine = RiskEngine(
+            killswitch=KillSwitchRegistry(db=self.db, workspace_id=workspace_id),
+            profile=profile,
+        )
         engine._open_positions = self._open_positions(acc.id).count()
+        engine._trades_today = self._trades_today(acc.id, now_ts)
+        engine._trades_session = 0
+        engine._consecutive_losses = self._consecutive_losses(acc.id)
+        engine._day_start_equity = acc.day_start_equity
+        engine._week_start_equity = acc.week_start_equity
+        engine._peak_equity = acc.equity_peak
+        engine._day = acc.day_key
+        engine._week = acc.week_key
 
         order = ProposedOrder(
             symbol=symbol,
@@ -225,8 +409,8 @@ class PaperTradingService:
             entry_price=entry_price,
             stop_price=stop,
             account_balance=balance,
-            account_equity=acc.equity,
-            spread_pips=self.md.get_spread(symbol),
+            account_equity=self._equity(acc),
+            spread_pips=quote.get("spread_pips", self._md(workspace_id).get_spread(symbol)),
             ts=now_ts,
             is_blackout=is_blackout(
                 now_ts,
@@ -292,6 +476,42 @@ class PaperTradingService:
                 status="open",
             )
             self.db.add(pos)
+            po = PaperOrder(
+                account_id=acc.id,
+                position_id=pos.id,
+                trade_id=trade.id,
+                strategy_id=strategy.id,
+                symbol=symbol,
+                side="buy" if side == "long" else "sell",
+                order_type="market",
+                status="FILLED",
+                size_units=size_units,
+                stop_loss=stop,
+                take_profit=target,
+                request_ts=now_ts,
+                approval_ts=now_ts,
+                fill_ts=now_ts,
+                fill_price=entry_price,
+                fill_side="entry",
+                meta={"basis": quote.get("bid_ask_basis"), "provider": quote.get("provider") or self._md(workspace_id).name},
+            )
+            self.db.add(po)
+            self.db.flush()
+            pf = PaperFill(
+                account_id=acc.id,
+                order_id=po.id,
+                position_id=pos.id,
+                trade_id=trade.id,
+                ts=now_ts,
+                price=entry_price,
+                volume=size_units,
+                side="buy" if side == "long" else "sell",
+                fill_type="entry",
+                bid_ask_basis=quote.get("bid_ask_basis", "mid"),
+                provider=quote.get("provider") or self._md(workspace_id).name,
+            )
+            self.db.add(pf)
+            self._record_margin_event(acc, "position_opened", f"opened {side} {symbol} {round(size_units, 2)}u @ {entry_price}")
             self._log_decision(workspace_id, decision, order)
             self.db.commit()
             self.db.refresh(trade)
@@ -300,6 +520,22 @@ class PaperTradingService:
 
         self._log_decision(workspace_id, decision, order)
         # No position/order rows were created; commit persists the risk alert.
+        self.db.add(
+            PaperOrder(
+                account_id=acc.id,
+                strategy_id=strategy.id,
+                symbol=symbol,
+                side="buy" if side == "long" else "sell",
+                order_type="market",
+                status="REJECTED",
+                size_units=size_units,
+                stop_loss=stop,
+                take_profit=target,
+                request_ts=now_ts,
+                rejection_reason=decision.rejection_reason,
+                meta={"correlation_id": decision.correlation_id, "basis": quote.get("bid_ask_basis")},
+            )
+        )
         self.db.commit()
         return OrderResult(
             approved=False,
@@ -314,26 +550,26 @@ class PaperTradingService:
         return self._close_position_locked(acc.id, position_id, reason=reason)
 
     def _close_position_locked(self, account_id: str, position_id: str, reason: str) -> PaperPosition:
-        pos = self.db.get(PaperPosition, position_id)
+        # Serialize concurrent closes by locking the account row first, then the
+        # position row, so a double-close can never credit the balance twice.
+        acc = self.db.execute(
+            select(PaperAccount).where(PaperAccount.id == account_id).with_for_update()
+        ).scalar_one_or_none()
+        if acc is None:
+            raise ValueError("account not found")
+        pos = self.db.execute(
+            select(PaperPosition).where(PaperPosition.id == position_id).with_for_update()
+        ).scalar_one_or_none()
         if pos is None or pos.account_id != account_id or pos.status != "open":
             raise ValueError("position not found or already closed")
 
-        quote = self.md.get_latest_quote(pos.symbol)
-        exit_price = quote["bid"] if pos.side == "long" else quote["ask"]
-        if pos.side == "long":
-            gross = (exit_price - pos.entry_price) * pos.size_units
-        else:
-            gross = (pos.entry_price - exit_price) * pos.size_units
-        acc = self.db.get(PaperAccount, account_id)
+        quote = feed_health.get_quote(self.db, acc.workspace_id, pos.symbol)
+        exit_price = self.paper_broker.exit_price(quote, pos.side)
+        gross = self.paper_broker.gross_pnl(pos.side, pos.entry_price, exit_price, pos.size_units)
         pip = pip_size("JPY" if pos.symbol.upper().endswith("JPY") else "USD")
-        pips = (exit_price - pos.entry_price) / pip
-        if pos.side == "short":
-            pips = (pos.entry_price - exit_price) / pip
-
-        # Simple cost model on the closing leg (spread + slippage).
-        spread_cost = self.md.get_spread(pos.symbol) * pip * pos.size_units
-        slippage_cost = 0.3 * pip * pos.size_units
-        net = gross - spread_cost - slippage_cost
+        pips = self.paper_broker.pips(pos.side, pos.entry_price, exit_price, pip)
+        costs = self.paper_broker.costs(quote, pos.side, pos.size_units)
+        net = money_sub(gross, costs.total)
 
         now_ts = datetime.now(timezone.utc).timestamp()
         pos.exit_ts = now_ts
@@ -353,8 +589,9 @@ class PaperTradingService:
                 trade.pips = pips
                 trade.gross_pnl = gross
                 trade.net_pnl = net
-                trade.spread_cost = spread_cost
-                trade.slippage_cost = slippage_cost
+                trade.spread_cost = costs.spread_cost
+                trade.slippage_cost = costs.slippage_cost
+                trade.commission = costs.commission
                 trade.reasons_exit = [{"rule_id": reason, "description": reason}]
                 self.db.add(
                     SimulatedFill(
@@ -367,8 +604,57 @@ class PaperTradingService:
                     )
                 )
 
-        acc.balance += net
+        acc.balance = money_add(acc.balance, net)
         acc.equity = acc.balance
+        # Execution ledger: exit order + fill + margin event.
+        if pos.order_id:
+            po = PaperOrder(
+                account_id=acc.id,
+                position_id=pos.id,
+                trade_id=pos.order_id,
+                strategy_id=pos.strategy_id,
+                symbol=pos.symbol,
+                side="sell" if pos.side == "long" else "buy",
+                order_type="market",
+                status="FILLED",
+                size_units=pos.size_units,
+                stop_loss=pos.stop_loss,
+                take_profit=pos.take_profit,
+                request_ts=now_ts,
+                approval_ts=now_ts,
+                fill_ts=now_ts,
+                fill_price=exit_price,
+                fill_side="exit",
+                meta={"basis": quote.get("bid_ask_basis"), "provider": quote.get("provider"), "reason": reason},
+            )
+            self.db.add(po)
+            self.db.flush()
+            self.db.add(
+                PaperFill(
+                    account_id=acc.id,
+                    order_id=po.id,
+                    position_id=pos.id,
+                    trade_id=pos.order_id,
+                    ts=now_ts,
+                    price=exit_price,
+                    volume=pos.size_units,
+                    side="sell" if pos.side == "long" else "buy",
+                    fill_type="exit",
+                    spread_cost=round(costs.spread_cost, 4),
+                    slippage_cost=round(costs.slippage_cost, 4),
+                    commission=round(costs.commission, 4),
+                    bid_ask_basis=quote.get("bid_ask_basis", "mid"),
+                    provider=quote.get("provider") or "mock",
+                )
+            )
+        state, reason = self.evaluate_trading_state(acc)
+        acc.trading_state = state
+        acc.state_reason = reason
+        self._record_margin_event(
+            acc,
+            "position_closed",
+            f"closed {pos.side} {pos.symbol} net {round(net, 4)} ({reason})",
+        )
         self.db.commit()
         self.db.refresh(pos)
         return pos
@@ -382,6 +668,65 @@ class PaperTradingService:
             .first()
         )
         return profile
+
+    def _equity(self, acc: PaperAccount) -> float:
+        """Mark-to-market equity: cash balance plus unrealized P&L on open positions."""
+        md = self._md(acc.workspace_id)
+        unrealized = 0.0
+        for pos in self._open_positions(acc.id).all():
+            quote = md.get_latest_quote(pos.symbol)
+            mark = quote["bid"] if pos.side == "long" else quote["ask"]
+            raw = (mark - pos.entry_price) * pos.size_units
+            if pos.side != "long":
+                raw = -raw
+            unrealized = money_add(unrealized, raw)
+        return money_add(acc.balance, unrealized)
+
+    def _rollover_account(self, acc: PaperAccount, ts: float) -> None:
+        """Roll day/week start equity and track the equity peak for drawdown gating."""
+        dt = datetime.fromtimestamp(ts, timezone.utc)
+        day = dt.strftime("%Y-%m-%d")
+        week = dt.strftime("%G-W%V")
+        equity = self._equity(acc)
+        if acc.day_key != day:
+            acc.day_key = day
+            acc.day_start_equity = equity
+        if acc.week_key != week:
+            acc.week_key = week
+            acc.week_start_equity = equity
+        if acc.equity_peak is None or equity > acc.equity_peak:
+            acc.equity_peak = equity
+
+    def _trades_today(self, account_id: str, ts: float) -> int:
+        start = (
+            datetime.fromtimestamp(ts, timezone.utc)
+            .replace(hour=0, minute=0, second=0, microsecond=0)
+            .timestamp()
+        )
+        return (
+            self.db.query(SimulatedOrder)
+            .filter(SimulatedOrder.paper_account_id == account_id, SimulatedOrder.entry_ts >= start)
+            .count()
+        )
+
+    def _consecutive_losses(self, account_id: str) -> int:
+        rows = (
+            self.db.query(SimulatedOrder)
+            .filter(
+                SimulatedOrder.paper_account_id == account_id,
+                SimulatedOrder.status == "closed",
+            )
+            .order_by(SimulatedOrder.exit_ts.desc())
+            .limit(50)
+            .all()
+        )
+        count = 0
+        for row in rows:
+            if (row.net_pnl or 0.0) < 0:
+                count += 1
+            else:
+                break
+        return count
 
     def _stop_dist(self, spec: StrategySpec, atr_val: float) -> float:
         method = spec.risk_management.stop_loss_method
@@ -403,16 +748,17 @@ class PaperTradingService:
         rr = float(params.get("risk_reward_ratio", 1.5))
         return stop_dist * rr
 
-    def _atr(self, symbol: str, period: int = 14) -> float:
+    def _atr(self, workspace_id: str, symbol: str, period: int = 14) -> float:
         from app.backtest.indicators import add_indicators
         from app.services.market_math import pip_size
 
+        md = self._md(workspace_id)
         try:
             import pandas as pd
 
             end = datetime.now(timezone.utc)
             start = end - timedelta(days=7)
-            candles = self.md.get_historical_candles(symbol, "M5", start, end)
+            candles = md.get_historical_candles(symbol, "M5", start, end)
             df = add_indicators(pd.DataFrame(candles), [{"name": "ATR", "parameters": {"period": period}}])
             val = float(df[f"ATR{period}"].dropna().iloc[-1])
             if val > 0:
@@ -450,7 +796,7 @@ class PaperTradingService:
         if not decision.approved:
             self.db.add(
                 Alert(
-                    workspace_id=workspace_id or order.strategy_id or "",
+                    workspace_id=workspace_id,
                     level="warning",
                     title="Order rejected by risk engine",
                     message=f"{order.symbol} {order.side}: {decision.rejection_reason}",
@@ -469,3 +815,87 @@ class PaperTradingService:
                     },
                 )
             )
+
+    # -- paper execution ledger (orders / fills / margin events) ----------
+    def paper_orders(self, workspace_id: str, limit: int = 100, status: str | None = None) -> list[dict]:
+        acc = self.ensure_account(workspace_id)
+        q = self.db.query(PaperOrder).filter(PaperOrder.account_id == acc.id)
+        if status:
+            q = q.filter(PaperOrder.status == status.upper())
+        rows = q.order_by(PaperOrder.created_at.desc()).limit(limit).all()
+        return [
+            {
+                "id": o.id,
+                "position_id": o.position_id,
+                "trade_id": o.trade_id,
+                "strategy_id": o.strategy_id,
+                "symbol": o.symbol,
+                "side": o.side,
+                "order_type": o.order_type,
+                "status": o.status,
+                "size_units": round(o.size_units, 2),
+                "stop_loss": round(o.stop_loss, 5) if o.stop_loss else None,
+                "take_profit": round(o.take_profit, 5) if o.take_profit else None,
+                "request_ts": o.request_ts,
+                "approval_ts": o.approval_ts,
+                "fill_ts": o.fill_ts,
+                "fill_price": round(o.fill_price, 5) if o.fill_price else None,
+                "fill_side": o.fill_side,
+                "rejection_reason": o.rejection_reason,
+                "meta": o.meta,
+            }
+            for o in rows
+        ]
+
+    def paper_fills(self, workspace_id: str, limit: int = 100) -> list[dict]:
+        acc = self.ensure_account(workspace_id)
+        rows = (
+            self.db.query(PaperFill)
+            .filter(PaperFill.account_id == acc.id)
+            .order_by(PaperFill.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": f.id,
+                "order_id": f.order_id,
+                "position_id": f.position_id,
+                "trade_id": f.trade_id,
+                "ts": f.ts,
+                "price": round(f.price, 5),
+                "volume": round(f.volume, 2),
+                "side": f.side,
+                "fill_type": f.fill_type,
+                "spread_cost": round(f.spread_cost, 4),
+                "slippage_cost": round(f.slippage_cost, 4),
+                "commission": round(f.commission, 4),
+                "bid_ask_basis": f.bid_ask_basis,
+                "provider": f.provider,
+            }
+            for f in rows
+        ]
+
+    def margin_events(self, workspace_id: str, limit: int = 100) -> list[dict]:
+        acc = self.ensure_account(workspace_id)
+        rows = (
+            self.db.query(PaperMarginEvent)
+            .filter(PaperMarginEvent.account_id == acc.id)
+            .order_by(PaperMarginEvent.created_at.desc())
+            .limit(limit)
+            .all()
+        )
+        return [
+            {
+                "id": m.id,
+                "ts": m.ts,
+                "event_type": m.event_type,
+                "detail": m.detail,
+                "balance": round(m.balance, 2),
+                "equity": round(m.equity, 2),
+                "drawdown_pct": round(m.drawdown_pct, 4),
+                "trading_state": m.trading_state,
+                "meta": m.meta,
+            }
+            for m in rows
+        ]

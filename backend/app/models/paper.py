@@ -19,6 +19,13 @@ class PaperAccount(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     currency: Mapped[str] = mapped_column(String(8), default="USD")
     is_active: Mapped[bool] = mapped_column(Boolean, default=False)
     started_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    day_key: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    day_start_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    week_key: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    week_start_equity: Mapped[float | None] = mapped_column(Float, nullable=True)
+    equity_peak: Mapped[float | None] = mapped_column(Float, nullable=True)
+    trading_state: Mapped[str] = mapped_column(String(24), default="INACTIVE")
+    state_reason: Mapped[str | None] = mapped_column(String(512), nullable=True)
 
 
 class PaperPosition(Base, UUIDPrimaryKeyMixin, TimestampMixin):

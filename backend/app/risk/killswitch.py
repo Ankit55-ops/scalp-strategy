@@ -1,89 +1,163 @@
 """Kill-switch registry: global, per-strategy, per-pair.
 
-Uses Redis for cross-process coordination with a JSON in-memory fallback
-so it works without Redis in tests. Persisted flip-state is also recorded
-to the DB audit log by the API layer.
+State is persisted in the database per workspace (single source of truth,
+survives restarts and is visible to the Risk Center). When no DB session is
+provided (e.g. unit tests of the risk engine) an in-memory fallback is used.
+
+An engaged switch blocks new entries at the risk engine and is only removed by
+an explicit manual (or automated-monitor) disarm.
 """
 
 from __future__ import annotations
 
-import json
-from typing import Any
-
-import redis
-
-from app.core.config import get_settings
+from app.models import KillSwitch
 
 
 class KillSwitchRegistry:
-    def __init__(self, redis_client: redis.Redis | None = None) -> None:
-        settings = get_settings()
-        if redis_client is None:
-            try:
-                redis_client = redis.Redis.from_url(
-                    settings.REDIS_URL, socket_connect_timeout=1
-                )
-                redis_client.ping()
-            except Exception:  # Redis unavailable -> in-memory fallback
-                redis_client = None
-        self._redis = redis_client
-        self._mem: dict[str, bool] = {}
+    def __init__(self, db=None, workspace_id: str | None = None) -> None:
+        self.db = db
+        self.workspace_id = workspace_id
+        self._mem: dict[tuple[str, str], bool] = {}
 
-    def _set(self, key: str, value: bool) -> None:
-        if self._redis is not None:
-            try:
-                self._redis.set(key, "1" if value else "0")
-                return
-            except Exception:
-                pass
-        self._mem[key] = value
+    # -- helpers ------------------------------------------------------------
+    def _query_row(self, scope: str, resource_id: str):
+        return (
+            self.db.query(KillSwitch)
+            .filter(
+                KillSwitch.workspace_id == self.workspace_id,
+                KillSwitch.scope == scope,
+                KillSwitch.resource_id == resource_id,
+            )
+            .first()
+        )
 
-    def _get(self, key: str) -> bool:
-        if self._redis is not None:
-            try:
-                v = self._redis.get(key)
-                return v == b"1" or v == "1"
-            except Exception:
-                pass
-        return self._mem.get(key, False)
-
-    def reset(self) -> None:
-        """Clear all kill-switch state (Redis-prefixed keys or memory)."""
-        if self._redis is not None:
-            try:
-                for key in self._redis.scan_iter("ks:*"):
-                    self._redis.delete(key)
-                return
-            except Exception:
-                pass
-        self._mem.clear()
+    def _upsert(self, scope: str, resource_id: str, enabled: bool, reason: str | None) -> None:
+        if self.db is not None and self.workspace_id:
+            row = self._query_row(scope, resource_id)
+            if enabled:
+                if row is None:
+                    self.db.add(
+                        KillSwitch(
+                            workspace_id=self.workspace_id,
+                            scope=scope,
+                            resource_id=resource_id,
+                            enabled=True,
+                            reason=reason,
+                        )
+                    )
+                else:
+                    row.enabled = True
+                    if reason:
+                        row.reason = reason
+                self.db.commit()
+            elif row is not None:
+                self.db.delete(row)
+                self.db.commit()
+            return
+        self._mem[(scope, resource_id)] = enabled
 
     # -- scopes ------------------------------------------------------------
-    def set_global(self, enabled: bool) -> None:
-        self._set("ks:global", enabled)
+    def set_global(self, enabled: bool, reason: str | None = None) -> None:
+        self._upsert("global", "global", enabled, reason)
 
-    def set_strategy(self, strategy_id: str, enabled: bool) -> None:
-        self._set(f"ks:strategy:{strategy_id}", enabled)
+    def set_strategy(self, strategy_id: str, enabled: bool, reason: str | None = None) -> None:
+        self._upsert("strategy", str(strategy_id), enabled, reason)
 
-    def set_pair(self, symbol: str, enabled: bool) -> None:
-        self._set(f"ks:pair:{symbol}", enabled)
+    def set_pair(self, symbol: str, enabled: bool, reason: str | None = None) -> None:
+        self._upsert("pair", str(symbol).upper().replace("/", ""), enabled, reason)
 
     # -- checks ------------------------------------------------------------
-    def is_halted(self, symbol: str, strategy_id: str | None = None) -> bool:
-        if self._get("ks:global"):
+    def is_halted(self, symbol: str | None, strategy_id: str | None = None) -> bool:
+        if self.db is not None and self.workspace_id:
+            rows = (
+                self.db.query(KillSwitch)
+                .filter(
+                    KillSwitch.workspace_id == self.workspace_id,
+                    KillSwitch.enabled.is_(True),
+                )
+                .all()
+            )
+            symbol = str(symbol).upper().replace("/", "") if symbol else symbol
+            for r in rows:
+                if r.scope == "global":
+                    return True
+                if r.scope == "strategy" and strategy_id and r.resource_id == str(strategy_id):
+                    return True
+                if r.scope == "pair" and symbol and r.resource_id == symbol:
+                    return True
+            return False
+
+        halted = sum(v for k, v in self._mem.items() if k[0] == "global") > 0
+        if halted:
             return True
-        if strategy_id and self._get(f"ks:strategy:{strategy_id}"):
+        if strategy_id and self._mem.get(("strategy", str(strategy_id))):
             return True
-        if symbol and self._get(f"ks:pair:{symbol}"):
+        if symbol and self._mem.get(("pair", str(symbol).upper().replace("/", ""))):
             return True
         return False
 
-    def status(self) -> dict[str, bool]:
-        return {
-            "global": self._get("ks:global"),
-            "strategy": {},
-            "pair": {},
-        }
-
     def is_global_halted(self) -> bool:
-        return self._get("ks:global")
+        return self.is_halted(symbol=None)
+
+    def status(self) -> dict:
+        strategy: dict[str, bool] = {}
+        pair: dict[str, bool] = {}
+        global_halted = False
+
+        if self.db is not None and self.workspace_id:
+            rows = (
+                self.db.query(KillSwitch)
+                .filter(
+                    KillSwitch.workspace_id == self.workspace_id,
+                    KillSwitch.enabled.is_(True),
+                )
+                .all()
+            )
+            for r in rows:
+                if r.scope == "global":
+                    global_halted = True
+                elif r.scope == "strategy":
+                    strategy[r.resource_id] = True
+                elif r.scope == "pair":
+                    pair[r.resource_id] = True
+        else:
+            for (scope, rid), value in self._mem.items():
+                if not value:
+                    continue
+                if scope == "global":
+                    global_halted = True
+                elif scope == "strategy":
+                    strategy[rid] = True
+                elif scope == "pair":
+                    pair[rid] = True
+
+        return {"global": global_halted, "strategy": strategy, "pair": pair}
+
+    def list_engagements(self) -> list[dict]:
+        """Active (engaged) switches as rows: [{scope, resource_id, reason}]."""
+        if self.db is not None and self.workspace_id:
+            rows = (
+                self.db.query(KillSwitch)
+                .filter(
+                    KillSwitch.workspace_id == self.workspace_id,
+                    KillSwitch.enabled.is_(True),
+                )
+                .all()
+            )
+            return [
+                {"scope": r.scope, "resource_id": r.resource_id, "reason": r.reason}
+                for r in rows
+            ]
+        out = []
+        for (scope, rid), value in self._mem.items():
+            if value:
+                out.append({"scope": scope, "resource_id": rid, "reason": None})
+        return out
+
+    def reset(self) -> None:
+        if self.db is not None and self.workspace_id:
+            for row in self.db.query(KillSwitch).filter(KillSwitch.workspace_id == self.workspace_id).all():
+                self.db.delete(row)
+            self.db.commit()
+            return
+        self._mem.clear()

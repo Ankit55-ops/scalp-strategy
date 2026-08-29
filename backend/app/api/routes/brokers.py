@@ -24,6 +24,17 @@ def connect_broker(
     ws: Workspace = Depends(get_current_workspace),
     db: Session = Depends(get_db),
 ) -> BrokerOut:
+    from app.core.config import get_settings
+
+    settings = get_settings()
+    if payload.provider == "oanda_practice" and not payload.sandbox:
+        if not settings.LIVE_TRADING_ENABLED:
+            raise HTTPException(
+                status_code=400,
+                detail="live OANDA connections are disabled (LIVE_TRADING_ENABLED=false); use a practice (sandbox) connection",
+            )
+        if not user.is_superuser:
+            raise HTTPException(status_code=403, detail="live OANDA connections require superuser approval")
     cipher = Cipher()
     conn = BrokerConnection(
         workspace_id=ws.id,

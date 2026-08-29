@@ -21,6 +21,20 @@ export default function PaperPage() {
   const [error, setError] = useState<string | null>(null);
   const [info, setInfo] = useState<string | null>(null);
 
+  function stateTone(state?: string): "good" | "bad" | "warn" | "default" {
+    switch (state) {
+      case "ACTIVE":
+        return "good";
+      case "RISK_PAUSED":
+      case "KILL_SWITCHED":
+        return "bad";
+      case "DATA_PAUSED":
+        return "warn";
+      default:
+        return "default";
+    }
+  }
+
   async function load() {
     await Promise.all([
       api<PaperStatus>("/paper-trading/status", { token: tokenStore.get() })
@@ -104,8 +118,13 @@ export default function PaperPage() {
         <Stat label="Equity" value={`$${status.equity.toLocaleString(undefined, { maximumFractionDigits: 2 })}`} tone={status.equity >= status.balance ? "good" : "bad"} />
         <Stat label="Open positions" value={status.open_positions} />
         <Stat label="Closed trades" value={status.closed_trades} />
-        <Stat label="Mode" value={<span className="text-base"><Badge label="simulated" tone="accent" /></span>} />
+        <Stat label="Trading state" value={<span className="text-base"><Badge label={status.trading_state || "ACTIVE"} tone={stateTone(status.trading_state)} /></span>} />
       </div>
+
+      {status.state_reason && <p className="text-xs text-text-dim mb-4">State: {status.state_reason}</p>}
+      {typeof status.pending_orders === "number" && status.pending_orders > 0 && (
+        <p className="text-xs text-warn mb-4">{status.pending_orders} pending order(s) awaiting approval.</p>
+      )}
 
       <div className="grid lg:grid-cols-2 gap-4 mb-6">
         <Card title="Place simulated order">

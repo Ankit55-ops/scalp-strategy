@@ -76,6 +76,24 @@ def create_backtest(
                 error=existing.error,
             )
 
+    max_active = get_settings().MAX_CONCURRENT_BACKTESTS_PER_WORKSPACE
+    active_count = (
+        db.query(BacktestJob)
+        .filter(
+            BacktestJob.workspace_id == ws.id,
+            BacktestJob.status.in_(["queued", "running"]),
+        )
+        .count()
+    )
+    if active_count >= max_active:
+        raise HTTPException(
+            status_code=429,
+            detail=(
+                f"backtest concurrency limit ({max_active} active job(s) per workspace) "
+                "reached; wait for the active job to finish"
+            ),
+        )
+
     job = BacktestJob(
         workspace_id=ws.id,
         strategy_id=strategy.id,

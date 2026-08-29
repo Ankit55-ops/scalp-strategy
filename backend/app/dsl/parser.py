@@ -45,6 +45,22 @@ class Parser:
     def __init__(self, tokens: list[Token]) -> None:
         self.tokens = tokens
         self.pos = 0
+        self.depth = 0
+
+    def _max_depth(self) -> int:
+        from app.core.config import get_settings
+
+        return get_settings().MAX_EXPRESSION_DEPTH
+
+    def _enter(self) -> None:
+        self.depth += 1
+        if self.depth > self._max_depth():
+            raise ParseError(
+                f"expression nesting exceeds depth limit of {self._max_depth()}"
+            )
+
+    def _leave(self) -> None:
+        self.depth -= 1
 
     def peek(self) -> Token:
         return self.tokens[self.pos]
@@ -121,7 +137,11 @@ class Parser:
     def parse_unary(self) -> Node:
         if self.peek().type == TOKEN_TYPES["OP"] and self.peek().value == "-":
             self.advance()
-            operand = self.parse_unary()
+            self._enter()
+            try:
+                operand = self.parse_unary()
+            finally:
+                self._leave()
             return Node("unary", "-", left=operand)
         return self.parse_primary()
 
@@ -141,7 +161,11 @@ class Parser:
             return Node("literal", None)
         if tok.type == TOKEN_TYPES["LPAREN"]:
             self.advance()
-            node = self.parse_or()
+            self._enter()
+            try:
+                node = self.parse_or()
+            finally:
+                self._leave()
             self.expect(TOKEN_TYPES["RPAREN"])
             return node
         if tok.type == TOKEN_TYPES["IDENT"]:
