@@ -1,0 +1,40 @@
+from __future__ import annotations
+
+from sqlalchemy import Boolean, Float, ForeignKey, String
+from sqlalchemy.orm import Mapped, mapped_column, relationship
+
+from app.db.session import Base
+from app.models.base import TimestampMixin, UUIDPrimaryKeyMixin
+
+
+class PaperAccount(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "paper_accounts"
+
+    workspace_id: Mapped[str] = mapped_column(
+        ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
+    )
+    name: Mapped[str] = mapped_column(String(128), default="Default Paper Account")
+    balance: Mapped[float] = mapped_column(Float, default=100000.0)
+    equity: Mapped[float] = mapped_column(Float, default=100000.0)
+    currency: Mapped[str] = mapped_column(String(8), default="USD")
+    is_active: Mapped[bool] = mapped_column(Boolean, default=False)
+    started_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+
+
+class PaperPosition(Base, UUIDPrimaryKeyMixin, TimestampMixin):
+    __tablename__ = "paper_positions"
+
+    account_id: Mapped[str] = mapped_column(
+        ForeignKey("paper_accounts.id", ondelete="CASCADE"), index=True
+    )
+    strategy_id: Mapped[str | None] = mapped_column(
+        ForeignKey("strategies.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    symbol: Mapped[str] = mapped_column(String(32))
+    side: Mapped[str] = mapped_column(String(8))
+    size_units: Mapped[float] = mapped_column(Float)
+    entry_price: Mapped[float] = mapped_column(Float)
+    stop_loss: Mapped[float] = mapped_column(Float)
+    take_profit: Mapped[float] = mapped_column(Float)
+    open_ts: Mapped[float] = mapped_column(Float)
+    status: Mapped[str] = mapped_column(String(24), default="open")
