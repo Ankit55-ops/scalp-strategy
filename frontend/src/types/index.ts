@@ -610,3 +610,99 @@ export type InstrumentMappingView = {
   contract_size?: number;
   connection_id: string;
 };
+
+// -- AI Strategy Analyzer ---------------------------------------------------
+export type AIIndicator = {
+  name: string;
+  parameters: Record<string, unknown>;
+};
+
+export type AIEntryRule = {
+  side: "long" | "short";
+  rule: string;
+};
+
+export type AIExitRule = {
+  rule: string;
+};
+
+export type AIRiskRules = {
+  risk_per_trade_pct: number;
+  max_trades_per_day: number;
+  max_daily_loss_pct: number;
+  max_spread_pips: number;
+};
+
+export type AIStopLoss = {
+  type: "ATR" | "FIXED" | "STRUCTURE";
+  atr_period: number;
+  multiplier: number;
+};
+
+export type AITakeProfit = {
+  type: "RISK_REWARD" | "ATR" | "FIXED";
+  ratio: number;
+};
+
+export type AISession = {
+  name: string;
+  start: string;
+  end: string;
+};
+
+export type AIStrategyAnalysis = {
+  name: string;
+  description: string;
+  strategy_family: string;
+  timeframe: string;
+  recommended_symbols: string[];
+  sessions_utc: AISession[];
+  indicators: AIIndicator[];
+  entry_rules: AIEntryRule[];
+  exit_rules: AIExitRule[];
+  risk_rules: AIRiskRules;
+  stop_loss: AIStopLoss;
+  take_profit: AITakeProfit;
+  assumptions: string[];
+  warnings: string[];
+  failure_conditions: string[];
+  testability_status: "VALID" | "NEEDS_USER_INPUT" | "INVALID";
+};
+
+export type StrategyAnalysis = {
+  analysis: AIStrategyAnalysis;
+  converted: boolean;
+  strategy_spec: unknown | null;
+  cache_hit: boolean;
+  provider_used: string;
+  text_sha256: string;
+};
+
+// -- Real Backtest chart ----------------------------------------------------
+export type RealBacktestChart = {
+  run: {
+    run_id: string;
+    run_status: string;
+    provider: string;
+    provider_symbol: string;
+    canonical_symbol: string;
+    timeout: string;
+    execution_model: string;
+    source_data_type: string;
+    source_data_hash: string | null;
+    candle_count: number;
+    start_time_utc: number;
+    end_time_utc: number;
+    data_quality_score: number | null;
+    warnings: string[];
+    error_safe: string | null;
+  };
+  candles: CandleView[];
+  overlays: Record<
+    string,
+    { type: string; name: string; values: { ts: number; value: number }[] }
+  >;
+  trades: ValidationTrade[];
+  signals: ValidationSignal[];
+  gaps: { start_ts?: number; end_ts?: number }[];
+};

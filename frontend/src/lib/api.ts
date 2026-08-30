@@ -278,3 +278,79 @@ export async function exportValidationRun(
 export async function getStrategies(token: string): Promise<import("@/types").Strategy[]> {
   return api("/strategies", { token });
 }
+
+// -- AI Strategy Analyzer ---------------------------------------------------
+export async function analyzeStrategy(
+  token: string,
+  prompt_text: string
+): Promise<import("@/types").StrategyAnalysis> {
+  return api("/strategy-analyzer/analyze", { method: "POST", body: { prompt_text }, token });
+}
+
+// -- Real Backtests (AI Strategy Tester data source) ------------------------
+export async function realBacktestPreview(
+  token: string,
+  body: {
+    strategy_id: string;
+    strategy_version_id?: string;
+    connection_id?: string;
+    provider: string;
+    provider_symbol: string;
+    timeout: string;
+    start_time_utc: string;
+    end_time_utc: string;
+  }
+): Promise<import("@/types").ValidationPreview> {
+  return api("/real-backtests/preview", { method: "POST", body, token });
+}
+
+export async function createRealBacktest(
+  token: string,
+  body: Record<string, unknown>
+): Promise<import("@/types").ValidationRun> {
+  return api("/real-backtests", { method: "POST", body, token });
+}
+
+export async function listRealBacktests(token: string, limit = 20): Promise<import("@/types").ValidationRun[]> {
+  return api(`/real-backtests?limit=${limit}`, { token });
+}
+
+export async function getRealBacktest(token: string, runId: string): Promise<import("@/types").ValidationRun> {
+  return api(`/real-backtests/${runId}`, { token });
+}
+
+export async function getRealBacktestChart(
+  token: string,
+  runId: string
+): Promise<import("@/types").RealBacktestChart> {
+  return api(`/real-backtests/${runId}/chart`, { token });
+}
+
+export async function getRealBacktestMetrics(
+  token: string,
+  runId: string
+): Promise<import("@/types").ValidationMetrics> {
+  return api(`/real-backtests/${runId}/metrics`, { token });
+}
+
+export async function saveStrategy(
+  token: string,
+  body: { name: string; spec: unknown; notes?: string }
+): Promise<{ id: string; name: string; current_version: string; status: string }> {
+  return api("/strategies", { method: "POST", body, token });
+}
+
+export async function addStrategyVersion(
+  token: string,
+  strategyId: string,
+  body: { spec: unknown; notes?: string }
+): Promise<{ version: string; notes: string; created_at: string }> {
+  return api(`/strategies/${strategyId}/versions`, { method: "POST", body, token });
+}
+
+export async function getStrategyVersions(
+  token: string,
+  strategyId: string
+): Promise<{ id: string; version: string; notes: string; created_at: string }[]> {
+  return api(`/strategies/${strategyId}/versions`, { token });
+}

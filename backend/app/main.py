@@ -24,10 +24,12 @@ from app.api.routes import (
     health,
     market_data,
     paper,
+    real_backtests,
     real_historical,
     risk,
     strategies,
     stream,
+    strategy_analyzer,
 )
 from app.core.config import get_settings
 from app.core.logging import setup_logging
@@ -148,6 +150,8 @@ app.include_router(audit.router, prefix=api_prefix)
 app.include_router(alerts.router, prefix=api_prefix)
 app.include_router(exness.router, prefix=api_prefix)
 app.include_router(real_historical.router, prefix=api_prefix)
+app.include_router(strategy_analyzer.router, prefix=api_prefix)
+app.include_router(real_backtests.router, prefix=api_prefix)
 
 
 @app.get("/", include_in_schema=False)

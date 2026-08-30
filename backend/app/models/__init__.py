@@ -18,6 +18,7 @@ from app.models.orders import SimulatedOrder, SimulatedFill
 from app.models.paper import PaperAccount, PaperPosition
 from app.models.paper_live import PaperFill, PaperMarginEvent, PaperOrder
 from app.models.risk import KillSwitch, RiskProfile, RiskEvent, AuditLog, Alert, SavedChartLayout
+from app.models.ai_analyzer import StrategyAnalysisCache
 from app.models.deployment import LiveDeploymentRequest
 from app.models.real_historical import (
     HistoricalDataQualityReport,
@@ -70,6 +71,7 @@ __all__ = [
     "AuditLog",
     "Alert",
     "SavedChartLayout",
+    "StrategyAnalysisCache",
     "LiveDeploymentRequest",
     "HistoricalDataQualityReport",
     "MT5GatewayAgent",

@@ -19,7 +19,12 @@ export type ChartMarker = {
   side?: "long" | "short";
 };
 
-function nearestIdx(ts: number, data: CandleView[]): number {
+export type ChartOverlay = {
+  name: string;
+  values: { ts: number; value: number }[];
+};
+
+export function nearestIdx(ts: number, data: CandleView[]): number {
   let best = 0;
   let bestDist = Infinity;
   for (let i = 0; i < data.length; i++) {
@@ -39,6 +44,8 @@ export default function CandlestickChart({
   height = 320,
   showVolume = true,
   markers = [],
+  overlays = [],
+  gaps = [],
 }: {
   candles: CandleView[];
   livePrice?: number | null;
@@ -46,6 +53,8 @@ export default function CandlestickChart({
   height?: number;
   showVolume?: boolean;
   markers?: ChartMarker[];
+  overlays?: ChartOverlay[];
+  gaps?: { start_ts?: number; end_ts?: number }[];
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const livePriceRef = useRef(livePrice);
@@ -104,6 +113,12 @@ export default function CandlestickChart({
         lo = Math.min(lo, m.price);
         hi = Math.max(hi, m.price);
       }
+      for (const ov of overlays) {
+        for (const p of ov.values) {
+          lo = Math.min(lo, p.value);
+          hi = Math.max(hi, p.value);
+        }
+      }
       const pad = Math.max((hi - lo) * 0.08, hi * 0.0002 || 0.01);
       lo -= pad;
       hi += pad;
@@ -140,6 +155,26 @@ export default function CandlestickChart({
       }
 
       const cw = Math.max(1, Math.min(16, (plotW / data.length) * 0.7));
+
+      // data gaps: translucent bands between nearest candles
+      if (gaps.length && data.length) {
+        const indexOf = new Map(data.map((c, i) => [c.ts, i]));
+        ctx.fillStyle = "rgba(251, 146, 60, 0.08)";
+gaps.forEach((g) => {
+        const sIdx =
+          g.start_ts != null && indexOf.has(g.start_ts)
+            ? indexOf.get(g.start_ts)!
+            : nearestIdx(g.start_ts ?? 0, data);
+        const eIdx =
+          g.end_ts != null && indexOf.has(g.end_ts)
+            ? indexOf.get(g.end_ts)!
+            : nearestIdx(g.end_ts ?? 0, data);
+        const x0 = padL + (Math.min(sIdx, eIdx) - 0.5) * (plotW / data.length);
+        const x1 = padL + (Math.max(sIdx, eIdx) + 0.5) * (plotW / data.length);
+        ctx.fillRect(x0, padT, Math.max(x1 - x0, 1), plotH);
+      });
+      }
+
       data.forEach((c, i) => {
         if (!c.ts) return;
         const cx = padL + (i + 0.5) * (plotW / data.length);
@@ -167,6 +202,35 @@ export default function CandlestickChart({
           ctx.globalAlpha = 1;
         }
       });
+
+      // indicator overlay lines (aligned to candle index by ts)
+      if (overlays.length && data.length) {
+        const indexOf = new Map(data.map((c, i) => [c.ts, i]));
+        const colors = ["#38bdf8", "#fbbf24", "#fb923c", "#34d399", "#c084fc", "#f472b6"];
+        overlays.forEach((ov, oi) => {
+          ctx.strokeStyle = colors[oi % colors.length];
+          ctx.lineWidth = 1.4;
+          ctx.globalAlpha = 0.9;
+          ctx.beginPath();
+          let started = false;
+          for (const p of ov.values) {
+            const idx = indexOf.has(p.ts) ? indexOf.get(p.ts)! : nearestIdx(p.ts, data);
+            const cx = padL + (idx + 0.5) * (plotW / data.length);
+            const cy = y(p.value);
+            if (!started) {
+              ctx.moveTo(cx, cy);
+              started = true;
+            } else {
+              ctx.lineTo(cx, cy);
+            }
+          }
+          ctx.stroke();
+          ctx.globalAlpha = 1;
+          ctx.fillStyle = colors[oi % colors.length];
+          ctx.font = "10px ui-monospace, monospace";
+          ctx.fillText(ov.name, padL + 6, padT + 12 + oi * 12);
+        });
+      }
 
       // trade markers (entry / exit / stop / target), snapped to candle index
       if (markers.length && data.length) {
@@ -230,7 +294,7 @@ export default function CandlestickChart({
     const ro = new ResizeObserver(() => draw());
     ro.observe(canvas);
     return () => ro.disconnect();
-  }, [candles, livePrice, lastQuoteTs, height, showVolume, markers]);
+  }, [candles, livePrice, lastQuoteTs, height, showVolume, markers, overlays, gaps]);
 
   return <canvas ref={ref} style={{ width: "100%", height }} className="block" />;
 }

@@ -6,6 +6,7 @@ const NAV = [
   { href: "/dashboard", label: "Dashboard", icon: "▦" },
   { href: "/strategies", label: "Strategies", icon: "◈" },
   { href: "/backtests", label: "Backtest Lab", icon: "◉" },
+  { href: "/ai-tester", label: "AI Strategy Tester", icon: "✦" },
   { href: "/real-historical", label: "Real Historical Data", icon: "▣" },
   { href: "/paper", label: "Paper Trading", icon: "≋" },
   { href: "/market-data", label: "Market Data", icon: "◔" },
