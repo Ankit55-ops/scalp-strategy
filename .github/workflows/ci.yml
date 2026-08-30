@@ -58,6 +58,15 @@ jobs:
           APP_ENV: test
         run: python -c "import app.main; print('imports OK')"
 
+      - name: Apply database migrations
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+psycopg://fxscalper:fxscalper_dev_password@localhost:5432/fxscalper
+          SECRET_KEY: ci-secret-key-with-32-characters-minimum-abc
+          APP_ENV: test
+        run: |
+          alembic upgrade head
+
       - name: Run tests
         working-directory: backend
         env:
