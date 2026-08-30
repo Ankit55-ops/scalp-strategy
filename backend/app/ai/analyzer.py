@@ -70,8 +70,8 @@ MARTINGALE_PATTERNS = [
 GRID_PATTERNS = [
     r"\bgrid\b",
     r"every \d+ (pips|points)",
-    r"dca",
-    r"dollar.cost average",
+    r"\bdca\b",
+    r"dollar.co?st average",
     r"average down",
     r"scale ?in",
     r"pyramid(ing)?",

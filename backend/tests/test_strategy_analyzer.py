@@ -200,3 +200,19 @@ def test_strategy_families_are_detected():
         r = _analyze(token, text)
         assert r.status_code == 200, r.text
         assert r.json()["analysis"]["strategy_family"] == family, text
+
+
+def test_pair_symbols_do_not_trigger_dca_grid_rejection():
+    # "USDCAD" contains the substring "dca"; the DCA rejection pattern is
+    # word-bounded so real pair codes must never flag an unlimited-grid design.
+    text = (
+        "Breakout on USDCAD during the New York session on M15, using the highest and "
+        "lowest of 20 candles for the range, ATR 14 stop, risk 1.5% per trade, "
+        "max 4 trades a day, max spread 3 pips."
+    )
+    r = _analyze(token=_user(), text=text)
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["analysis"]["testability_status"] == "VALID", body
+    assert not any("grid" in w or "averaging" in w for w in body["analysis"]["warnings"]), body
+    assert body["converted"] is True and body["strategy_spec"] is not None

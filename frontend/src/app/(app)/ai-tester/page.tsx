@@ -12,6 +12,7 @@ import {
   getRealBacktestChart,
   getRealBacktestMetrics,
   getStrategies,
+  listRealBacktests,
   realBacktestPreview,
   saveStrategy,
   tokenStore,
@@ -41,6 +42,19 @@ const EXEC_MODELS = [
   "SIGNAL_PRICE",
   "ESTIMATED_SPREAD_FROM_MID",
 ];
+
+const ALLOWED_TIMEFRAMES = ["M1", "M5", "M15", "M30", "H1", "H4", "D1"];
+
+const DSL_ALLOWED = ["ema", "sma", "rsi", "atr", "crossover", "crossunder", "highest", "lowest", "close", "high", "low", "and", "or", ">", "<", ">=", "<="];
+
+const FAMILY_MAP: Record<string, string> = {
+  trend_pullback: "trend_pullback",
+  breakout: "breakout",
+  mean_reversion: "mean_reversion",
+  momentum: "momentum",
+  range_fade: "range_fade",
+  liquidity_sweep: "liquidity_sweep",
+};
 
 function toIso(dateVal: string): string {
   return new Date(`${dateVal}T00:00:00Z`).toISOString();
@@ -98,6 +112,34 @@ function toOverlays(chart: RealBacktestChart): ChartOverlay[] {
   return Object.values(chart.overlays || {});
 }
 
+// Validate the edited spec object against the schema's hard requirements so the
+// user gets precise feedback instead of a raw 422 from the backend.
+function missingFields(spec: Record<string, unknown> | null): string[] {
+  if (!spec || typeof spec !== "object") return ["valid JSON required"];
+  const out: string[] = [];
+  if (!Array.isArray(spec.supported_pairs) || (spec.supported_pairs as unknown[]).length === 0)
+    out.push("`supported_pairs` must list at least one symbol");
+  if (
+    !Array.isArray(spec.supported_timeframes) ||
+    (spec.supported_timeframes as unknown[]).length === 0 ||
+    !(spec.supported_timeframes as string[]).every((tf) => ALLOWED_TIMEFRAMES.includes(tf))
+  )
+    out.push(`\`supported_timeframes\` must be one of ${ALLOWED_TIMEFRAMES.join("|")}`);
+  if (!Array.isArray(spec.sessions_utc) || (spec.sessions_utc as unknown[]).length === 0)
+    out.push("`sessions_utc` must list at least one {name, start, end} window (HH:MM UTC)");
+  const entries = (spec.entry_rules as unknown[] | undefined) || [];
+  const exits = (spec.exit_rules as unknown[] | undefined) || [];
+  if (entries.length === 0 && exits.length === 0)
+    out.push("at least one `entry_rules` or `exit_rules` rule is required");
+  const rules = [...entries, ...exits] as { expression?: string }[];
+  if (rules.some((r) => !r.expression || !r.expression.trim()))
+    out.push("every rule needs a non-empty DSL `expression`");
+  const rm = spec.risk_management as Record<string, unknown> | undefined;
+  if (!rm || !rm.stop_loss_method || !rm.take_profit_method || !(typeof rm.risk_per_trade_pct === "number" && rm.risk_per_trade_pct > 0))
+    out.push("`risk_management` needs stop_loss_method, take_profit_method and risk_per_trade_pct (> 0, ≤ 5)");
+  return out;
+}
+
 export default function AiTesterPage() {
   const token = tokenStore.get() as string;
 
@@ -110,9 +152,10 @@ export default function AiTesterPage() {
     "Trend pullback on EURUSD and GBPUSD on M5 during the London session, using EMA 20 and EMA 50, ATR 14 for the stop, risk 1% per trade, max 5 trades a day, max spread 2 pips."
   );
   const [analysis, setAnalysis] = useState<AIStrategyAnalysis | null>(null);
-  const [strategySpec, setStrategySpec] = useState<unknown | null>(null);
+  const [converted, setConverted] = useState(false);
   const [cacheHit, setCacheHit] = useState(false);
-  const [editableJson, setEditableJson] = useState("");
+  const [specJson, setSpecJson] = useState("");
+  const [lastSavedSpecJson, setLastSavedSpecJson] = useState<string | null>(null);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [msg, setMsg] = useState<string | null>(null);
@@ -144,9 +187,23 @@ export default function AiTesterPage() {
   const connId = instruments[0]?.connection_id ?? "";
   const runReady = providerReady && savedStrategyId !== null && !busy;
 
-  // markers/overlays memoized once chart is loaded
+  // live spec validation
+  const specObj = useMemo<Record<string, unknown> | null>(() => {
+    if (!specJson.trim()) return null;
+    try {
+      return JSON.parse(specJson) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
+  }, [specJson]);
+  const specValidJson = specObj !== null;
+  const missing = useMemo(() => missingFields(specObj), [specObj]);
+
   const markers = useMemo(() => (chart ? toMarkers(chart) : []), [chart]);
   const overlays = useMemo(() => (chart ? toOverlays(chart) : []), [chart]);
+
+  const specDirty = lastSavedSpecJson !== null && specJson !== lastSavedSpecJson;
+  const invalid = analysis?.testability_status === "INVALID";
 
   async function load() {
     try {
@@ -161,6 +218,11 @@ export default function AiTesterPage() {
     }
     try {
       setSavedStrategies(await getStrategies(token));
+    } catch {
+      /* none */
+    }
+    try {
+      setRecentRuns(await listRealBacktests(token, 5));
     } catch {
       /* none */
     }
@@ -179,15 +241,22 @@ export default function AiTesterPage() {
     setRun(null);
     setChart(null);
     setMetrics(null);
+    const text = prompt.trim();
+    if (text.length < 10) {
+      setError("Describe the strategy in at least 10 characters.");
+      setBusy("");
+      return;
+    }
     try {
-      const res: StrategyAnalysis = await analyzeStrategy(token, prompt.trim());
+      const res: StrategyAnalysis = await analyzeStrategy(token, text);
       setAnalysis(res.analysis);
-      setStrategySpec(res.converted ? res.strategy_spec : null);
+      setConverted(res.converted);
       setCacheHit(res.cache_hit);
-      setEditableJson(JSON.stringify(res.analysis, null, 2));
+      setSpecJson(JSON.stringify(res.strategy_spec ?? convertAnalysisToSpec(res.analysis), null, 2));
+      setLastSavedSpecJson(null);
       setMsg(
         res.cache_hit
-          ? "Returned from cache (identical text was already analyzed)."
+          ? "Returned from cache (identical text already analyzed)."
           : `Analyzed (source: ${res.provider_used}).`
       );
     } catch (err) {
@@ -197,14 +266,32 @@ export default function AiTesterPage() {
     }
   }
 
-  function applyJson() {
-    setError(null);
-    try {
-      setAnalysis(JSON.parse(editableJson) as AIStrategyAnalysis);
-      setMsg("Reviewed/edited AI rules applied. Save them as a strategy version before running.");
-    } catch {
-      setError("The edited JSON is not valid. Check the syntax before saving.");
+  async function saveSpec(bodyName?: string) {
+    if (!specValidJson) {
+      setError("The strategy spec is not valid JSON. Fix the syntax before saving.");
+      return null;
     }
+    if (missing.length) {
+      setError(`Cannot save yet — ${missing[0].toLowerCase()}.`);
+      return null;
+    }
+    if (invalid) {
+      setError("The analyzer flagged this description as unsafe (martingale/grid/no stop-loss). Edit the text and re-analyze instead of saving.");
+      return null;
+    }
+    if (!savedStrategyId) {
+      const created = await saveStrategy(token, { name: bodyName || "AI Strategy", spec: specObj });
+      setSavedStrategyId(created.id);
+      setSavedVersion(created.current_version);
+      setLastSavedSpecJson(specJson);
+      setMsg(`Strategy "${created.name}" v${created.current_version} created.`);
+      return created;
+    }
+    const v = await addStrategyVersion(token, savedStrategyId, { spec: specObj });
+    setSavedVersion(v.version);
+    setLastSavedSpecJson(specJson);
+    setMsg(`Saved a new version v${v.version}.`);
+    return { id: savedStrategyId, version: v.version };
   }
 
   async function onSaveStrategy(e: FormEvent) {
@@ -217,43 +304,10 @@ export default function AiTesterPage() {
     }
     setBusy("save");
     try {
-      if (!savedStrategyId) {
-        const created = await saveStrategy(token, {
-          name: analysis.name || "AI Strategy",
-          spec: strategySpec ?? convertAnalysisToSpec(analysis),
-        });
-        setSavedStrategyId(created.id);
-        setSavedVersion(created.current_version);
-        setMsg(`Strategy "${created.name}" v${created.current_version} created.`);
-      } else {
-        const v = await addStrategyVersion(token, savedStrategyId, {
-          spec: strategySpec ?? convertAnalysisToSpec(analysis),
-        });
-        setSavedVersion(v.version);
-        setMsg(`Saved a new version v${v.version}.`);
-      }
+      await saveSpec(analysis.name || "AI Strategy");
       setSavedStrategies(await getStrategies(token));
     } catch (err) {
       setError(err instanceof ApiError ? err.message : "save failed");
-    } finally {
-      setBusy("");
-    }
-  }
-
-  async function onNewVersion(e: FormEvent) {
-    e.preventDefault();
-    setError(null);
-    setMsg(null);
-    if (!analysis || !savedStrategyId) return;
-    setBusy("version");
-    try {
-      const v = await addStrategyVersion(token, savedStrategyId, {
-        spec: strategySpec ?? convertAnalysisToSpec(analysis),
-      });
-      setSavedVersion(v.version);
-      setMsg(`Saved v${v.version} for this strategy.`);
-    } catch (err) {
-      setError(err instanceof ApiError ? err.message : "version save failed");
     } finally {
       setBusy("");
     }
@@ -342,17 +396,14 @@ export default function AiTesterPage() {
 
   async function refreshRuns() {
     try {
-      const res = await fetch(`${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000/api"}/real-backtests?limit=5`, {
-        headers: { Authorization: `Bearer ${token}` },
-      });
-      if (res.ok) setRecentRuns((await res.json()) as ValidationRun[]);
+      setRecentRuns(await listRealBacktests(token, 5));
     } catch {
       /* ignore */
     }
   }
 
   async function selectRun(runId: string) {
-    setBusy("run");
+    setBusy("select");
     setError(null);
     try {
       const r = await getRealBacktest(token, runId);
@@ -365,12 +416,19 @@ export default function AiTesterPage() {
     }
   }
 
+  const optionalPairs = useMemo(() => {
+    const extra = analysis?.recommended_symbols?.length
+      ? analysis.recommended_symbols.slice(0, 6)
+      : ["EURUSD", "GBPUSD", "USDJPY", "USDCAD"];
+    return Array.from(new Set([...instruments.map((i) => i.canonical_symbol), ...extra]));
+  }, [instruments, analysis]);
+
   return (
     <div className="space-y-6">
       <SectionTitle>AI Strategy Tester</SectionTitle>
       <p className="text-sm text-text-dim -mt-3 mb-2">
         Describe a strategy in plain English. The analyzer converts it into strict testable rules once
-        (cached by text), you review/edit them, then run a deterministic backtest on real historical data.
+        (cached by text), you review/edit the spec, then run a deterministic backtest on real historical data.
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
@@ -385,79 +443,124 @@ export default function AiTesterPage() {
               placeholder="Describe your entry/exit rules, symbols, timeframe, session, stop-loss and risk."
               maxLength={4000}
             />
-            <div className="flex items-center gap-2">
+            <div className="flex items-center justify-between text-xs text-text-dim">
               <button
                 type="submit"
-                disabled={busy === "analyze"}
+                disabled={busy === "analyze" || prompt.trim().length < 10}
                 className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-bg disabled:opacity-50"
               >
                 {busy === "analyze" ? "Analyzing…" : cacheHit ? "Re-analyze" : "Analyze strategy"}
               </button>
-              {cacheHit && <Badge label="cached" tone="warn" />}
+              <span>
+                {prompt.length}/4000{cacheHit && <Badge label="cached" tone="warn" />}
+              </span>
             </div>
+            {analysis && (
+              <div className="text-xs text-text-dim border-t border-border pt-2 space-y-1">
+                <div className="flex flex-wrap gap-2">
+                  <Badge
+                    label={analysis.testability_status}
+                    tone={analysis.testability_status === "VALID" ? "good" : analysis.testability_status === "INVALID" ? "bad" : "warn"}
+                  />
+                  <Badge label={converted ? "converted to DSL" : "manual spec needed"} tone={converted ? "good" : "warn"} />
+                  <Badge label={analysis.strategy_family} tone="default" />
+                  <Badge label={analysis.timeframe} tone="accent" />
+                </div>
+                {analysis.name && <p className="font-medium text-text">{analysis.name}</p>}
+                {analysis.description && <p>{analysis.description}</p>}
+                {analysis.warnings.length > 0 && (
+                  <ul className="text-warn space-y-0.5">
+                    {analysis.warnings.map((w, i) => (
+                      <li key={i}>· {w}</li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+            )}
           </form>
         </Card>
 
-        {/* Panel 2: AI rules review/edit */}
-        <Card title="2 · AI rules (review & edit)">
+        {/* Panel 2: strategy spec review/edit */}
+        <Card title="2 · Strategy spec (review & edit)">
           {!analysis ? (
             <p className="text-sm text-text-dim">No analysis yet. Run the analyzer first.</p>
           ) : (
             <div className="space-y-3">
-              <div className="flex flex-wrap items-center gap-2">
-                <Badge
-                  label={analysis.testability_status}
-                  tone={
-                    analysis.testability_status === "VALID"
-                      ? "good"
-                      : analysis.testability_status === "INVALID"
-                      ? "bad"
-                      : "warn"
-                  }
-                />
-                <Badge label={analysis.strategy_family} tone="default" />
-                <Badge label={analysis.timeframe} tone="accent" />
-              </div>
-              {analysis.warnings.length > 0 && (
-                <ul className="text-xs text-warn space-y-1">
-                  {analysis.warnings.map((w, i) => (
-                    <li key={i}>· {w}</li>
-                  ))}
-                </ul>
+              {invalid && (
+                <p className="text-xs text-danger">
+                  The analyzer flagged this description as unsafe (martingale, grid, or no stop-loss). Edit the text
+                  and re-analyze — this spec will not be saved.
+                </p>
+              )}
+              {!converted && !invalid && (
+                <p className="text-xs text-warn">
+                  The analyzer could not fully convert this description. Complete the missing fields below using the
+                  allowed DSL, then save.
+                </p>
               )}
               <textarea
-                value={editableJson}
-                onChange={(e) => setEditableJson(e.target.value)}
-                rows={9}
+                value={specJson}
+                onChange={(e) => setSpecJson(e.target.value)}
+                rows={12}
                 className={`${INPUT} font-mono text-xs resize-y`}
                 spellCheck={false}
+                aria-label="Strategy spec JSON"
               />
+              <div className="text-xs space-y-1">
+                <p className={specValidJson ? "text-text-dim" : "text-danger"}>
+                  {specValidJson ? "Valid JSON" : "Invalid JSON — fix the syntax before saving"}
+                </p>
+                {specValidJson && missing.length > 0 && (
+                  <ul className="text-warn space-y-0.5">
+                    {missing.map((m, i) => (
+                      <li key={i}>· {m}</li>
+                    ))}
+                  </ul>
+                )}
+                {specValidJson && missing.length === 0 && <p className="text-accent">Ready to save — all required fields present.</p>}
+                {!converted && (
+                  <p className="text-text-dim mt-1">
+                    Rule expressions use the allow-list: {DSL_ALLOWED.join(" ")}.
+                  </p>
+                )}
+              </div>
               <div className="flex flex-wrap items-center gap-2">
-                <button
-                  type="button"
-                  onClick={applyJson}
-                  className="rounded-lg border border-border px-3 py-1.5 text-xs text-text-dim hover:text-text"
-                >
-                  Apply edits
-                </button>
                 <button
                   type="button"
                   onClick={onSaveStrategy}
-                  disabled={busy === "save"}
-                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-bg disabled:opacity-50"
+                  disabled={busy === "save" || invalid || !specValidJson || missing.length > 0}
+                  className="rounded-lg bg-accent px-3 py-2 text-sm font-medium text-bg disabled:opacity-40"
                 >
                   {busy === "save"
                     ? "Saving…"
                     : savedStrategyId
-                    ? `Save new version ${analysis.name}`
+                    ? `Save new version${analysis.name ? ` · ${analysis.name}` : ""}`
                     : "Save as strategy"}
                 </button>
               </div>
               {savedStrategyId && (
-                <div className="flex items-center gap-2 text-xs">
+                <div className="text-xs flex items-center gap-2">
                   <Badge label={`v${savedVersion || "?"}`} tone="good" />
-                  <span className="text-text-dim">saved strategy</span>
+                  <span className="text-text-dim">saved strategy ·</span>
+                  {specDirty ? (
+                    <span className="text-warn">unsaved edits — save a new version</span>
+                  ) : (
+                    <span className="text-text-dim">spec matches saved version</span>
+                  )}
                 </div>
+              )}
+              {analysis.testability_status === "NEEDS_USER_INPUT" && !invalid && (
+                <details className="text-xs">
+                  <summary className="text-text-dim cursor-pointer">Why it needs input · assumptions & failures</summary>
+                  <ul className="mt-2 space-y-1 text-text-dim">
+                    {analysis.assumptions.map((a, i) => (
+                      <li key={i}>· assume: {a}</li>
+                    ))}
+                    {analysis.failure_conditions.map((f, i) => (
+                      <li key={i}>· watch: {f}</li>
+                    ))}
+                  </ul>
+                </details>
               )}
             </div>
           )}
@@ -476,24 +579,18 @@ export default function AiTesterPage() {
             <div className="grid grid-cols-2 gap-2">
               <label className="text-xs text-text-dim">
                 Symbol
-                <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className={INPUT} disabled={!instruments.length}>
-                  {instruments.length
-                    ? instruments.map((i) => (
-                        <option key={i.provider_symbol} value={i.canonical_symbol}>
-                          {i.canonical_symbol} (mapped)
-                        </option>
-                      ))
-                    : ["EURUSD", "GBPUSD", "USDJPY", "USDCAD"].map((s) => (
-                        <option key={s} value={s}>
-                          {s}
-                        </option>
-                      ))}
+                <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className={INPUT}>
+                  {optionalPairs.map((s) => (
+                    <option key={s} value={s}>
+                      {s}
+                    </option>
+                  ))}
                 </select>
               </label>
               <label className="text-xs text-text-dim">
                 Timeframe
                 <select value={timeout} onChange={(e) => setTimeoutTf(e.target.value)} className={INPUT}>
-                  {["M1", "M5", "M15", "M30", "H1", "H4", "D1"].map((tf) => (
+                  {ALLOWED_TIMEFRAMES.map((tf) => (
                     <option key={tf} value={tf}>
                       {tf}
                     </option>
@@ -554,10 +651,10 @@ export default function AiTesterPage() {
               <button
                 type="button"
                 onClick={onPreview}
-                disabled={!savedStrategyId}
+                disabled={!savedStrategyId || busy === "preview"}
                 className="rounded-lg border border-border px-3 py-2 text-sm text-text-dim hover:text-text disabled:opacity-40"
               >
-                Preview
+                {busy === "preview" ? "Previewing…" : "Preview"}
               </button>
               <button
                 type="submit"
@@ -600,7 +697,7 @@ export default function AiTesterPage() {
       {/* Results */}
       {run && (
         <Card
-          title={`Results · ${run.provider_symbol} ${run.timeout} · ${run.run_status}`}
+          title={`Results · ${run.canonical_symbol} ${run.timeout} · ${run.run_status}${run.strategy_version ? ` · v${run.strategy_version}` : ""}`}
           className="!p-0"
         >
           <div className="p-4 space-y-4">
@@ -703,8 +800,11 @@ export default function AiTesterPage() {
               >
                 <div className="flex flex-wrap items-center gap-2">
                   <Badge label={r.run_status} tone={statusTone(r.run_status)} />
-                  <span className="text-text">{r.canonical_symbol} {r.timeout}</span>
+                  <span className="text-text">
+                    {r.canonical_symbol} {r.timeout}
+                  </span>
                   <span className="text-text-dim text-xs">{r.candle_count} candles</span>
+                  {busy === "select" && <span className="text-text-dim text-xs animate-pulse">loading…</span>}
                 </div>
               </button>
             ))}
@@ -723,24 +823,25 @@ export default function AiTesterPage() {
   );
 }
 
-// The analyzer endpoint returns an already-converted, DSL-valid strategy spec
-// when the analysis was testable; otherwise we build the request body from the
-// reviewed analysis fields (the backend persists it through the safe spec
-// schema). This module never executes any user/AI-provided code.
+// Fallback used only when the analyzer could not return a converted spec (e.g.
+// NEEDS_USER_INPUT): builds a shape-safe skeleton from the reviewed analysis.
+// The user completes the missing strict fields before saving. This module never
+// executes any user/AI-provided code.
 function convertAnalysisToSpec(analysis: AIStrategyAnalysis): Record<string, unknown> {
   const session = analysis.sessions_utc?.[0] || { name: "Full", start: "00:00", end: "23:59" };
+  const family = FAMILY_MAP[analysis.strategy_family] ?? "trend_pullback";
   const rules =
     analysis.entry_rules?.map((r, i) => ({
       id: `${r.side}_rule_${i + 1}`,
       description: r.rule,
       expression: "",
     })) || [];
-  const spec: Record<string, unknown> = {
+  return {
     name: analysis.name || "AI Strategy",
     version: "1.0.0",
-    strategy_family: analysis.strategy_family,
-    supported_pairs: analysis.recommended_symbols?.length ? analysis.recommended_symbols.slice(0, 6) : ["EURUSD"],
-    supported_timeframes: [analysis.timeframe],
+    strategy_family: family,
+    supported_pairs: analysis.recommended_symbols?.length ? analysis.recommended_symbols.slice(0, 6) : [],
+    supported_timeframes: analysis.timeframe ? [analysis.timeframe] : [],
     sessions_utc: [session],
     market_regime: { preferred: [], avoid: [] },
     indicators: analysis.indicators || [],
@@ -771,7 +872,6 @@ function convertAnalysisToSpec(analysis: AIStrategyAnalysis): Record<string, unk
     assumptions: analysis.assumptions || [],
     failure_modes: analysis.failure_conditions || [],
     plain_english_explanation: analysis.description || "",
-    confidence_notes: "AI Strategy Tester: review expressions before saving if the analyzer could not convert.",
+    confidence_notes: "AI Strategy Tester: complete the strict spec fields before saving — the analyzer could not fully convert this description.",
   };
-  return spec;
 }
