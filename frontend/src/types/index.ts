@@ -423,3 +423,190 @@ export type PaperMarginEventView = {
   trading_state: string;
   created_at: string;
 };
+// ---- Real Historical Data + Exness/MT5 provider connection types ----
+
+export type ProviderConnectionStatusCard = {
+  connection_status: string;
+  selected_provider: string;
+  display_name: string | null;
+  connection_mode: string | null;
+  environment: string | null;
+  account_type: "demo" | "real" | "unknown" | "not_connected";
+  provider_server: string | null;
+  capabilities: string[];
+  available_capabilities: string[];
+  unavailable_capabilities: string[];
+  last_successful_data_utc: string | null;
+  latency_ms: number | null;
+  feed_health: string | null;
+  active_symbol_count: number;
+  active_symbols: string[];
+  instrument_count: number;
+  message: string;
+  show_connect_button: boolean;
+  live_trading_status: "disabled";
+};
+
+export type ExnessCapabilityReport = {
+  connection_status: string;
+  account_environment: string;
+  provider_server: string | null;
+  instrument_count: number;
+  capabilities: Record<string, string>;
+  historical_data_available: boolean;
+  quote_availability: string;
+  account_metadata_available: boolean;
+  data_delay_status: string;
+  latency_ms: number | null;
+  live_trading_status: string;
+  account_label: string | null;
+  detail?: string | null;
+};
+
+export type ExnessConnectOut = {
+  connection: {
+    id: string;
+    provider: string;
+    display_name: string | null;
+    connection_mode: string | null;
+    environment: string | null;
+    status: string;
+    health_status: string | null;
+    last_connected_at: string | null;
+    last_successful_data_at: string | null;
+    last_error_message_safe: string | null;
+  };
+  capabilities: Record<string, string>;
+  live_trading_status: string;
+};
+
+export type PairingTokenOut = {
+  gateway_id: string;
+  pairing_token: string;
+  expires_in_seconds: number;
+  expires_at_utc: string;
+  note: string;
+};
+
+export type ValidationPreview = {
+  strategy_version: string;
+  provider_status: string;
+  connection_mode: string | null;
+  symbol_mapping_status: string;
+  historical_coverage_status: string;
+  required_warmup_candles: number;
+  estimated_candles: number;
+  incompatibilities: string[];
+  plan_limits: Record<string, number>;
+  timeframes_supported: string[];
+  symbol_in_spec: boolean;
+};
+
+export type ValidationRun = {
+  id: string;
+  workspace_id: string;
+  strategy_id: string;
+  strategy_version_id: string | null;
+  strategy_version: string | null;
+  provider_name: string;
+  provider_symbol: string;
+  canonical_symbol: string;
+  timeout: string;
+  start_time_utc: number;
+  end_time_utc: number;
+  account_currency: string;
+  starting_balance: number;
+  execution_model: string;
+  source_data_type: string;
+  source_data_hash: string | null;
+  candle_count: number;
+  missing_candle_count: number;
+  data_quality_score: number | null;
+  run_status: string;
+  error_safe: string | null;
+  warnings: string[];
+  created_at: string | null;
+  completed_at_utc: number | null;
+  result: Record<string, unknown> | null;
+};
+
+export type ValidationQuality = {
+  run_id: string;
+  provider_name: string;
+  provider_symbol: string;
+  canonical_symbol: string;
+  timeout: string;
+  data_type: string;
+  requested_start: number;
+  requested_end: number;
+  actual_start: number | null;
+  actual_end: number | null;
+  expected_candles: number;
+  received_candles: number;
+  missing_candles: number;
+  duplicate_candles_removed: number;
+  warmup_candles_used: number;
+  gap_count: number;
+  gaps: unknown[] | null;
+  feed_delay_warning: string | null;
+  spread_availability: string;
+  bid_ask_availability: string;
+  cost_model_confidence: string;
+  quality_status: string;
+  details: Record<string, unknown> | null;
+};
+
+export type ValidationTrade = {
+  id: string;
+  side: string;
+  entry_ts: number;
+  exit_ts: number | null;
+  entry_price: number;
+  exit_price: number | null;
+  entry_price_basis: string;
+  exit_price_basis: string;
+  size_units: number;
+  stop: number | null;
+  target: number | null;
+  gross_pnl: number;
+  net_pnl: number;
+  spread_cost: number;
+  slippage_cost: number;
+  commission: number;
+  swap: number;
+  pips: number;
+  risk_amount: number;
+  risk_reward_ratio: number | null;
+  exit_reason: string | null;
+  execution_model: string | null;
+  reasons_entry: unknown[] | null;
+  reasons_exit: unknown[] | null;
+  risk_engine_decision: Record<string, unknown> | null;
+  strategy_version: string | null;
+};
+
+export type ValidationSignal = {
+  ts: number;
+  signal: string;
+  state: string;
+  blocked_reason: string | null;
+  price: number;
+  detail: Record<string, unknown> | null;
+};
+
+export type ValidationMetrics = {
+  metrics: Record<string, number>;
+  details: Record<string, { raw?: unknown }>;
+};
+
+export type InstrumentMappingView = {
+  provider_symbol: string;
+  canonical_symbol: string;
+  display_symbol: string;
+  base_currency?: string;
+  quote_currency?: string;
+  pip_size?: number;
+  lot_step?: number;
+  contract_size?: number;
+  connection_id: string;
+};

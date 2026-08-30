@@ -51,3 +51,27 @@ def require_superuser(user: User = Depends(get_current_user)) -> User:
     if not user.is_superuser:
         raise HTTPException(status_code=403, detail="insufficient privileges")
     return user
+
+
+def require_recent_auth(
+    token: str = Depends(oauth2_scheme),
+    user: User = Depends(get_current_user),
+) -> User:
+    """Credential-mutation guard: require a token issued within the window.
+
+    Adding, changing, or deleting provider credentials demands a recent
+    authentication so a long-lived bearer token alone cannot rotate secrets.
+    """
+    import time as _time
+
+    from app.core.config import get_settings
+
+    payload = decode_access_token(token)
+    issued = payload.get("iat") if payload else None
+    if not issued or _time.time() - float(issued) > get_settings().PROVIDER_REAUTH_WINDOW_SECONDS:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Re-authentication required. Please log in again before changing provider credentials.",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return user

@@ -19,6 +19,21 @@ from app.models.paper import PaperAccount, PaperPosition
 from app.models.paper_live import PaperFill, PaperMarginEvent, PaperOrder
 from app.models.risk import KillSwitch, RiskProfile, RiskEvent, AuditLog, Alert, SavedChartLayout
 from app.models.deployment import LiveDeploymentRequest
+from app.models.real_historical import (
+    HistoricalDataQualityReport,
+    MT5GatewayAgent,
+    MT5GatewayPairingEvent,
+    ProviderConnectionAuditLog,
+    ProviderConnectionCapability,
+    ProviderConnectionHealthEvent,
+    ProviderHistoricalDataCache,
+    ProviderInstrumentMapping,
+    RealHistoricalValidationCostEvent,
+    RealHistoricalValidationMetric,
+    RealHistoricalValidationRun,
+    RealHistoricalValidationSignal,
+    RealHistoricalValidationTrade,
+)
 
 __all__ = [
     "User",
@@ -56,4 +71,17 @@ __all__ = [
     "Alert",
     "SavedChartLayout",
     "LiveDeploymentRequest",
+    "HistoricalDataQualityReport",
+    "MT5GatewayAgent",
+    "MT5GatewayPairingEvent",
+    "ProviderConnectionAuditLog",
+    "ProviderConnectionCapability",
+    "ProviderConnectionHealthEvent",
+    "ProviderHistoricalDataCache",
+    "ProviderInstrumentMapping",
+    "RealHistoricalValidationCostEvent",
+    "RealHistoricalValidationMetric",
+    "RealHistoricalValidationRun",
+    "RealHistoricalValidationSignal",
+    "RealHistoricalValidationTrade",
 ]

@@ -80,8 +80,30 @@ class ProviderConnection(Base, UUIDPrimaryKeyMixin, TimestampMixin):
     workspace_id: Mapped[str] = mapped_column(
         ForeignKey("workspaces.id", ondelete="CASCADE"), index=True
     )
-    provider: Mapped[str] = mapped_column(String(24), index=True)
-    status: Mapped[str] = mapped_column(String(24), default="disconnected")
+    # status values: NOT_CONFIGURED, CONFIGURED, CONNECTING, CONNECTED, DEGRADED,
+    # STALE, DISCONNECTED, AUTHENTICATION_FAILED, PERMISSION_DENIED,
+    # UNSUPPORTED_ACCOUNT, RATE_LIMITED, MAINTENANCE, ERROR
+    provider: Mapped[str] = mapped_column(String(24), default="exness", index=True)  # oanda | twelvedata | exness
+    status: Mapped[str] = mapped_column(String(24), default="NOT_CONFIGURED")
+
+    # -- extended schema for broker/gateway connections (e.g. Exness via MT5) --
+    user_id: Mapped[str | None] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), nullable=True, index=True
+    )
+    display_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    connection_mode: Mapped[str | None] = mapped_column(
+        String(24), nullable=True
+    )  # mt5_gateway_agent | server_side_mt5 | approved_bridge
+    environment: Mapped[str | None] = mapped_column(String(12), nullable=True)  # demo | real | unknown
+    encrypted_credentials: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    encrypted_connection_metadata: Mapped[str | None] = mapped_column(String(4096), nullable=True)
+    capability_metadata: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    health_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    last_successful_data_at: Mapped[float | None] = mapped_column(Float, nullable=True)
+    last_error_code: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    last_error_message_safe: Mapped[str | None] = mapped_column(String(512), nullable=True)
+
+    # -- legacy fields (kept for backward compatibility with older consumers) --
     latency_ms: Mapped[float | None] = mapped_column(Float, nullable=True)
     last_connected_at: Mapped[float | None] = mapped_column(Float, nullable=True)
     error: Mapped[str | None] = mapped_column(String(512), nullable=True)

@@ -54,6 +54,12 @@ class Settings(BaseSettings):
     MARKET_DATA_PROVIDER: str = "mock"
     BROKER_PROVIDER: str = "simulated"
 
+    # -- Exness via MetaTrader 5 -------------------------------------------
+    # When true (development/test), the Exness MT5 connection uses the clearly
+    # labelled mock/test adapter. In a real deployment this must be false and a
+    # server-side MT5 connector / approved gateway agent provides data.
+    EXNESS_MOCK_ADAPTER: bool = True
+
     # -- real market data providers (OANDA v20 / Twelve Data) -------------
     OANDA_API_KEY: str = ""
     OANDA_ACCOUNT_ID: str = ""
@@ -80,6 +86,7 @@ class Settings(BaseSettings):
     BROKER_PRACTICE_DRY_RUN: bool = True
 
     BACKTEST_ASYNC: bool = False
+    VALIDATION_ASYNC: bool = False
 
     ENABLE_CSRF: bool = False
 
@@ -101,6 +108,14 @@ class Settings(BaseSettings):
 
     MAX_CONCURRENT_BACKTESTS_PER_WORKSPACE: int = 1
     MAX_CONCURRENT_WS_PER_USER: int = 4
+
+    # -- provider connection security --------------------------------------
+    # Credential-mutating provider endpoints require a token issued within this
+    # window (a "recent authentication" check before add/change/delete).
+    PROVIDER_REAUTH_WINDOW_SECONDS: int = 900
+    # Connection attempt budget per workspace before 429 (test/connect/pair).
+    PROVIDER_CONNECT_MAX_ATTEMPTS_PER_WINDOW: int = 20
+    PROVIDER_CONNECT_WINDOW_SECONDS: int = 300
 
     PAPER_MAX_LEVERAGE: float = 20.0
     PAPER_MIN_BALANCE: float = 1000.0
@@ -179,7 +194,7 @@ class Settings(BaseSettings):
         if self.DATA_ENCRYPTION_KEY:
             try:
                 raw = base64.b64decode(self.DATA_ENCRYPTION_KEY)
-            except Exception as exc:  # noqa: BLE001
+            except Exception as exc:
                 raise ValueError(
                     "DATA_ENCRYPTION_KEY is not valid base64"
                 ) from exc

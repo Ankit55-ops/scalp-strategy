@@ -12,18 +12,40 @@ const TEXT = "rgba(148, 163, 184, 0.9)";
  * Lightweight canvas candlestick chart. Redraws only when the candle array
  * changes, so live ticks can be folded into the last bar cheaply.
  */
+export type ChartMarker = {
+  ts: number;
+  price: number;
+  type: "entry" | "exit" | "stop" | "target";
+  side?: "long" | "short";
+};
+
+function nearestIdx(ts: number, data: CandleView[]): number {
+  let best = 0;
+  let bestDist = Infinity;
+  for (let i = 0; i < data.length; i++) {
+    const d = Math.abs((data[i].ts || 0) - ts);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
 export default function CandlestickChart({
   candles,
   livePrice,
   lastQuoteTs,
   height = 320,
   showVolume = true,
+  markers = [],
 }: {
   candles: CandleView[];
   livePrice?: number | null;
   lastQuoteTs?: number | null;
   height?: number;
   showVolume?: boolean;
+  markers?: ChartMarker[];
 }) {
   const ref = useRef<HTMLCanvasElement>(null);
   const livePriceRef = useRef(livePrice);
@@ -77,6 +99,10 @@ export default function CandlestickChart({
       if (livePrice) {
         lo = Math.min(lo, livePrice);
         hi = Math.max(hi, livePrice);
+      }
+      for (const m of markers) {
+        lo = Math.min(lo, m.price);
+        hi = Math.max(hi, m.price);
       }
       const pad = Math.max((hi - lo) * 0.08, hi * 0.0002 || 0.01);
       lo -= pad;
@@ -142,6 +168,48 @@ export default function CandlestickChart({
         }
       });
 
+      // trade markers (entry / exit / stop / target), snapped to candle index
+      if (markers.length && data.length) {
+        const tsToIndex = new Map(data.map((c, i) => [c.ts, i]));
+        markers.forEach((m) => {
+          const snapped = tsToIndex.has(m.ts) ? tsToIndex.get(m.ts)! : nearestIdx(m.ts, data);
+          const cx = padL + (snapped + 0.5) * (plotW / data.length);
+          const cy = y(m.price);
+          const color =
+            m.type === "entry"
+              ? m.side === "long"
+                ? BULL
+                : BEAR
+              : m.type === "stop"
+              ? "#f43f5e"
+              : m.type === "target"
+              ? "#22d3ee"
+              : "#a78bfa";
+          ctx.strokeStyle = color;
+          ctx.fillStyle = color;
+          ctx.lineWidth = 1.6;
+          if (m.type === "entry" || m.type === "exit") {
+            // filled triangle
+            const r = 5;
+            const tip = m.type === "exit" ? -1 : 1;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - r * tip);
+            ctx.lineTo(cx - r, cy + r * tip);
+            ctx.lineTo(cx + r, cy + r * tip);
+            ctx.closePath();
+            ctx.fill();
+          } else {
+            // x cross for stop/target
+            ctx.beginPath();
+            ctx.moveTo(cx - 4, cy - 4);
+            ctx.lineTo(cx + 4, cy + 4);
+            ctx.moveTo(cx + 4, cy - 4);
+            ctx.lineTo(cx - 4, cy + 4);
+            ctx.stroke();
+          }
+        });
+      }
+
       // live price line
       if (livePrice && livePriceRef.current != null) {
         ctx.strokeStyle = "rgba(59, 130, 246, 0.8)";
@@ -162,7 +230,7 @@ export default function CandlestickChart({
     const ro = new ResizeObserver(() => draw());
     ro.observe(canvas);
     return () => ro.disconnect();
-  }, [candles, livePrice, lastQuoteTs, height, showVolume]);
+  }, [candles, livePrice, lastQuoteTs, height, showVolume, markers]);
 
   return <canvas ref={ref} style={{ width: "100%", height }} className="block" />;
 }

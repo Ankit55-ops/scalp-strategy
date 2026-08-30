@@ -63,7 +63,10 @@ def place_paper_order(
     db: Session = Depends(get_db),
 ) -> PaperOrderResult:
     svc = PaperTradingService(db)
-    result = svc.place_order(ws.id, payload.strategy_id, payload.side, payload.size_units)
+    result = svc.place_order(
+        ws.id, payload.strategy_id, payload.side, payload.size_units,
+        idempotency_key=payload.idempotency_key,
+    )
     if result.approved and result.position is not None:
         return PaperOrderResult(
             approved=True,
@@ -97,10 +100,11 @@ def close_paper_position(
     user: User = Depends(get_current_user),
     ws: Workspace = Depends(get_current_workspace),
     db: Session = Depends(get_db),
+    idempotency_key: str | None = Query(None, max_length=128),
 ) -> PaperCloseResult:
     svc = PaperTradingService(db)
     try:
-        pos = svc.close_position(ws.id, position_id)
+        pos = svc.close_position(ws.id, position_id, idempotency_key=idempotency_key)
     except ValueError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
     return PaperCloseResult(

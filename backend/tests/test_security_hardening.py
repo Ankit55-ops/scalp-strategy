@@ -11,14 +11,12 @@ import uuid
 
 import pytest
 from fastapi.testclient import TestClient
-from sqlalchemy import select
 
 from app.main import app
 from app.models import (
     BacktestJob,
     PaperAccount,
     PaperPosition,
-    SimulatedOrder,
     Strategy,
     User,
     Workspace,
@@ -191,6 +189,87 @@ def test_jwt_rejects_expired_token():
     assert decode_access_token(token) is None
 
 
+def test_jwt_rejects_non_access_token_type():
+    import jwt as pyjwt
+
+    from app.core.config import get_settings
+    from app.core.security import decode_access_token
+
+    settings = get_settings()
+    now = math.floor(__import__("time").time())
+    bogus = pyjwt.encode(
+        {
+            "sub": "u1",
+            "iss": settings.JWT_ISSUER,
+            "iat": now,
+            "nbf": now,
+            "exp": now + 3600,
+            "jti": uuid.uuid4().hex,
+            "typ": "refresh",
+        },
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+    assert decode_access_token(bogus) is None
+
+
+def test_jwt_requires_nbf_claim():
+    import jwt as pyjwt
+
+    from app.core.config import get_settings
+    from app.core.security import decode_access_token
+
+    settings = get_settings()
+    now = math.floor(__import__("time").time())
+    missing_nbf = pyjwt.encode(
+        {
+            "sub": "u1",
+            "iss": settings.JWT_ISSUER,
+            "iat": now,
+            "exp": now + 3600,
+            "jti": uuid.uuid4().hex,
+            "typ": "access",
+        },
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+    assert decode_access_token(missing_nbf) is None
+
+
+def test_jwt_rejects_token_not_before_in_future():
+    import jwt as pyjwt
+
+    from app.core.config import get_settings
+    from app.core.security import decode_access_token
+
+    settings = get_settings()
+    now = math.floor(__import__("time").time())
+    future = pyjwt.encode(
+        {
+            "sub": "u1",
+            "iss": settings.JWT_ISSUER,
+            "iat": now,
+            "nbf": now + 3600,
+            "exp": now + 7200,
+            "jti": uuid.uuid4().hex,
+            "typ": "access",
+        },
+        settings.SECRET_KEY,
+        algorithm="HS256",
+    )
+    assert decode_access_token(future) is None
+
+
+def test_jwt_access_token_roundtrip_has_type_and_nbf():
+    from app.core.security import create_access_token, decode_access_token
+
+    payload = decode_access_token(create_access_token(subject="user-123"))
+    assert payload is not None
+    assert payload["sub"] == "user-123"
+    assert payload["typ"] == "access"
+    assert "nbf" in payload
+
+
 # ---------------------------------------------------------------------------
 # H1: auth hardening
 # ---------------------------------------------------------------------------
@@ -315,7 +394,7 @@ def test_paper_order_rejects_non_finite_size():
 def test_paper_close_is_single_credited_and_idempotent():
     email = _email()
     try:
-        token, ws = _token_and_workspace(email)
+        _, ws = _token_and_workspace(email)
         from app.db.session import SessionLocal
 
         db = SessionLocal()
@@ -467,19 +546,17 @@ def test_ws_rejects_query_string_token_and_header_only():
 
     token = create_access_token(subject="whoever")
     # query-string token is rejected outright
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect(
-            f"/api/ws/market-data?token={token}",
-            headers={"origin": "http://localhost:3000"},
-        ):
-            pass
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+        f"/api/ws/market-data?token={token}",
+        headers={"origin": "http://localhost:3000"},
+    ):
+        pass
     # missing subprotocol rejected
-    with pytest.raises(WebSocketDisconnect):
-        with client.websocket_connect(
-            "/api/ws/market-data",
-            headers={"origin": "http://localhost:3000"},
-        ):
-            pass
+    with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+        "/api/ws/market-data",
+        headers={"origin": "http://localhost:3000"},
+    ):
+        pass
 
 
 def test_ws_accepts_valid_subprotocol_token():
@@ -514,13 +591,12 @@ def test_ws_rejects_disallowed_origin_and_enforces_connection_cap(monkeypatch):
         assert settings.cors_origins == allowed_origins
 
         # disallowed origin rejected
-        with pytest.raises(WebSocketDisconnect):
-            with client.websocket_connect(
-                "/api/ws/market-data",
-                subprotocols=[token],
-                headers={"origin": "http://evil.example"},
-            ):
-                pass
+        with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+            "/api/ws/market-data",
+            subprotocols=[token],
+            headers={"origin": "http://evil.example"},
+        ):
+            pass
 
         # connection cap: a second socket is refused while one is open
         monkeypatch.setattr(settings, "MAX_CONCURRENT_WS_PER_USER", 1)
@@ -531,13 +607,12 @@ def test_ws_rejects_disallowed_origin_and_enforces_connection_cap(monkeypatch):
         ) as ws1:
             first = ws1.receive_json()
             assert first["type"] == "snapshot"
-            with pytest.raises(WebSocketDisconnect):
-                with client.websocket_connect(
-                    "/api/ws/market-data",
-                    subprotocols=[token],
-                    headers={"origin": "http://trusted.example"},
-                ):
-                    pass
+            with pytest.raises(WebSocketDisconnect), client.websocket_connect(
+                "/api/ws/market-data",
+                subprotocols=[token],
+                headers={"origin": "http://trusted.example"},
+            ):
+                pass
     finally:
         _cleanup(email)
 
@@ -621,7 +696,7 @@ def test_risk_decision_audit_does_not_mislabel_strategy_as_actor():
 
     email = _email()
     try:
-        token = _login(_register(email)["email"])
+        _login(_register(email)["email"])
         from app.db.session import SessionLocal
 
         db = SessionLocal()

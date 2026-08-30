@@ -15,11 +15,11 @@ from app.core.config import get_settings
 logger = logging.getLogger("fxscalper.http")
 
 try:
-    import redis as _redis
 
     _redis_imported = True
-except Exception:  # pragma: no cover
+except Exception:  # pragma: no cover - optional dependency
     _redis_imported = False
+    logger.debug("redis unavailable; using in-memory rate limiting")
 
 
 def client_ip(request: Request) -> str:

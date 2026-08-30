@@ -108,3 +108,173 @@ export const tokenStore = {
     storageSet(EMAIL_KEY, email);
   },
 };
+// ---- Exness/MT5 provider connection helpers ----
+
+export async function getExnessStatusCard(token: string): Promise<import("@/types").ProviderConnectionStatusCard> {
+  return api<import("@/types").ProviderConnectionStatusCard>("/providers/exness-mt5/status", { token });
+}
+
+export async function testExnessConnection(
+  token: string,
+  body: {
+    mode: "gateway" | "server_side";
+    environment?: "demo" | "real";
+    login?: string;
+    password?: string;
+    server?: string;
+    gateway_url?: string;
+    pairing_code?: string;
+    device_name?: string;
+    idempotency_key?: string;
+  }
+): Promise<import("@/types").ExnessCapabilityReport> {
+  return api("/providers/exness-mt5/test-connection", { method: "POST", body, token });
+}
+
+export async function connectExness(
+  token: string,
+  body: {
+    connection_mode: "server_side_mt5" | "mt5_gateway_agent" | "approved_bridge";
+    display_name: string;
+    environment?: "demo" | "real";
+    login?: string;
+    password?: string;
+    server?: string;
+    use_read_only?: boolean;
+    gateway_url?: string;
+    pairing_code?: string;
+    device_name?: string;
+    account_label?: string;
+    read_only_capabilities?: string[];
+    confirm_read_only?: boolean;
+    idempotency_key?: string;
+  }
+): Promise<import("@/types").ExnessConnectOut> {
+  return api("/providers/exness-mt5/connect", { method: "POST", body, token });
+}
+
+export async function issueExnessPairing(
+  token: string,
+  body: { gateway_url: string; device_name: string; pairing_code?: string; idempotency_key?: string }
+): Promise<import("@/types").PairingTokenOut> {
+  return api("/providers/exness-mt5/pair-gateway", { method: "POST", body, token });
+}
+
+export async function verifyExnessGateway(
+  token: string,
+  gatewayId: string,
+  pairingToken: string
+): Promise<{ gateway_id?: string; status?: string; detail?: string }> {
+  const q = `?gateway_id=${encodeURIComponent(gatewayId)}&pairing_token=${encodeURIComponent(pairingToken)}`;
+  return api(`/providers/exness-mt5/gateway/verify${q}`, { method: "POST", token });
+}
+
+export async function disconnectExness(
+  token: string,
+  body: { connection_id?: string; keep_instruments?: boolean }
+): Promise<{ disconnected: boolean; detail?: string }> {
+  return api("/providers/exness-mt5/disconnect", { method: "POST", body, token });
+}
+
+export async function getExnessInstruments(
+  token: string,
+  connectionId?: string
+): Promise<import("@/types").InstrumentMappingView[]> {
+  const q = connectionId ? `?connection_id=${encodeURIComponent(connectionId)}` : "";
+  return api(`/providers/exness-mt5/instruments${q}`, { token });
+}
+
+// ---- Real Historical Data validation helpers ----
+
+export async function previewValidation(
+  token: string,
+  body: {
+    connection_id: string;
+    strategy_id: string;
+    provider_symbol: string;
+    canonical_symbol: string;
+    timeout: string;
+    start_time_utc?: string;
+    end_time_utc?: string;
+    days?: number;
+  }
+): Promise<import("@/types").ValidationPreview> {
+  return api("/real-historical-validations/preview", { method: "POST", body, token });
+}
+
+export async function createValidationRun(
+  token: string,
+  body: {
+    idempotency_key: string;
+    connection_id: string;
+    strategy_id: string;
+    provider_symbol: string;
+    canonical_symbol: string;
+    timeout: string;
+    start_time_utc?: string;
+    end_time_utc?: string;
+    days?: number;
+    execution_model?: string;
+    cost?: Record<string, unknown>;
+  }
+): Promise<import("@/types").ValidationRun> {
+  return api("/real-historical-validations", { method: "POST", body, token });
+}
+
+export async function listValidationRuns(token: string, limit = 20): Promise<import("@/types").ValidationRun[]> {
+  return api(`/real-historical-validations?limit=${limit}`, { token });
+}
+
+export async function getValidationRun(token: string, runId: string): Promise<import("@/types").ValidationRun> {
+  return api(`/real-historical-validations/${runId}`, { token });
+}
+
+export async function getValidationCandles(
+  token: string,
+  runId: string,
+  limit = 2000
+): Promise<import("@/types").CandleResponse> {
+  return api(`/real-historical-validations/${runId}/candles?limit=${limit}`, { token });
+}
+
+export async function getValidationTrades(token: string, runId: string): Promise<import("@/types").ValidationTrade[]> {
+  return api(`/real-historical-validations/${runId}/trades`, { token });
+}
+
+export async function getValidationSignals(token: string, runId: string): Promise<import("@/types").ValidationSignal[]> {
+  return api(`/real-historical-validations/${runId}/signals`, { token });
+}
+
+export async function getValidationMetrics(
+  token: string,
+  runId: string
+): Promise<import("@/types").ValidationMetrics> {
+  return api(`/real-historical-validations/${runId}/metrics`, { token });
+}
+
+export async function getValidationQuality(token: string, runId: string): Promise<import("@/types").ValidationQuality> {
+  return api(`/real-historical-validations/${runId}/data-quality`, { token });
+}
+
+export async function getValidationEquity(
+  token: string,
+  runId: string
+): Promise<{ equity_curve: { ts: number; balance: number }[] }> {
+  return api(`/real-historical-validations/${runId}/equity-curve`, { token });
+}
+
+export async function cancelValidationRun(token: string, runId: string): Promise<{ error_safe?: string }> {
+  return api(`/real-historical-validations/${runId}/cancel`, { method: "POST", token });
+}
+
+export async function exportValidationRun(
+  token: string,
+  runId: string,
+  body: { format?: "json" | "csv" }
+): Promise<Record<string, unknown>> {
+  return api(`/real-historical-validations/${runId}/export`, { method: "POST", body, token });
+}
+
+export async function getStrategies(token: string): Promise<import("@/types").Strategy[]> {
+  return api("/strategies", { token });
+}

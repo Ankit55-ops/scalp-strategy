@@ -42,11 +42,23 @@ class PaperOrderRequest(BaseModel):
     strategy_id: str
     side: str = Field(pattern=r"^(long|short|buy|sell)$")
     size_units: float | None = Field(default=None, gt=0, le=1_000_000_000)
+    idempotency_key: str | None = Field(default=None, max_length=128)
 
     @field_validator("size_units")
     @classmethod
     def _validate_size(cls, v: float | None) -> float | None:
         return _finite_positive(v)
+
+    @field_validator("idempotency_key")
+    @classmethod
+    def _validate_idempotency_key(cls, v: str | None) -> str | None:
+        if v is not None:
+            v = v.strip()
+            if not v:
+                raise ValueError("idempotency_key must not be empty")
+            if len(v) > 128:
+                raise ValueError("idempotency_key too long (max 128 chars)")
+        return v
 
 
 class PaperOrderResult(BaseModel):

@@ -53,6 +53,12 @@ class OrderResult:
     correlation_id: str | None = None
 
 
+# (account_id, idempotency_key) -> closed position_id. Best-effort memo used so a
+# duplicated position-close request returns the already-closed result instead of
+# failing with "already closed". Single event loop / single process today.
+_CLOSE_MEMO: dict[tuple[str, str], str] = {}
+
+
 class PaperTradingService:
     def __init__(self, db: Session, slippage_pips: float = 0.1) -> None:
         self.db = db
@@ -312,10 +318,38 @@ class PaperTradingService:
         side: str,
         size_units: float | None = None,
         account_balance: float | None = None,
+        idempotency_key: str | None = None,
     ) -> OrderResult:
         acc = self._account_locked(workspace_id)
         if not acc.is_active:
             return OrderResult(approved=False, position=None, order=None, reason="paper account not active")
+
+        # Idempotent replay: if this client already submitted this order (same
+        # workspace + idempotency key), return the existing result instead of
+        # opening a second position. The account row lock above serializes
+        # concurrent identical submissions.
+        if idempotency_key:
+            existing = (
+                self.db.query(SimulatedOrder)
+                .filter(
+                    SimulatedOrder.paper_account_id == acc.id,
+                    SimulatedOrder.idempotency_key == idempotency_key,
+                )
+                .first()
+            )
+            if existing is not None:
+                pos = (
+                    self.db.query(PaperPosition)
+                    .filter(PaperPosition.order_id == existing.id)
+                    .first()
+                )
+                return OrderResult(
+                    approved=True,
+                    position=pos,
+                    order=existing,
+                    correlation_id="idempotent-replay",
+                )
+
         state, state_reason = self.evaluate_trading_state(acc)
         if state != "ACTIVE":
             return OrderResult(
@@ -437,7 +471,7 @@ class PaperTradingService:
             trade = SimulatedOrder(
                 paper_account_id=acc.id,
                 strategy_id=strategy.id,
-                idempotency_key=None,
+                idempotency_key=idempotency_key,
                 symbol=symbol,
                 timeframe=spec.supported_timeframes[0],
                 side="buy" if side == "long" else "sell",
@@ -545,9 +579,26 @@ class PaperTradingService:
             correlation_id=decision.correlation_id,
         )
 
-    def close_position(self, workspace_id: str, position_id: str, reason: str = "manual_close") -> PaperPosition:
+    def close_position(
+        self,
+        workspace_id: str,
+        position_id: str,
+        reason: str = "manual_close",
+        idempotency_key: str | None = None,
+    ) -> PaperPosition:
         acc = self.ensure_account(workspace_id)
-        return self._close_position_locked(acc.id, position_id, reason=reason)
+        # Idempotent replay: return the already-closed position for a duplicate
+        # close request keyed by (account, idempotency_key) instead of failing
+        # with "already closed". Belt-and-suspenders on top of the row lock.
+        if idempotency_key and (acc.id, idempotency_key) in _CLOSE_MEMO:
+            memo_pos_id = _CLOSE_MEMO[(acc.id, idempotency_key)]
+            existing = self.db.get(PaperPosition, memo_pos_id)
+            if existing is not None:
+                return existing
+        pos = self._close_position_locked(acc.id, position_id, reason=reason)
+        if idempotency_key:
+            _CLOSE_MEMO[(acc.id, idempotency_key)] = pos.id
+        return pos
 
     def _close_position_locked(self, account_id: str, position_id: str, reason: str) -> PaperPosition:
         # Serialize concurrent closes by locking the account row first, then the

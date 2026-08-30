@@ -14,7 +14,9 @@ import uuid
 from datetime import datetime, timedelta, timezone
 
 from cryptography.fernet import Fernet, InvalidToken
-from jwt import PyJWTError, decode as jwt_decode, encode as jwt_encode
+from jwt import PyJWTError
+from jwt import decode as jwt_decode
+from jwt import encode as jwt_encode
 
 from app.core.config import get_settings
 
@@ -45,10 +47,12 @@ def create_access_token(subject: str, expires_minutes: int | None = None) -> str
     settings = get_settings()
     expire = expires_minutes if expires_minutes is not None else settings.ACCESS_TOKEN_EXPIRE_MINUTES
     now = datetime.now(timezone.utc)
+    iat = int(now.timestamp())
     payload = {
         "sub": str(subject),
         "iss": settings.JWT_ISSUER,
-        "iat": int(now.timestamp()),
+        "iat": iat,
+        "nbf": iat,  # not-before == issued-at: never accept a token "from the future"
         "exp": int((now + timedelta(minutes=expire)).timestamp()),
         "jti": uuid.uuid4().hex,
         "typ": "access",
@@ -59,19 +63,25 @@ def create_access_token(subject: str, expires_minutes: int | None = None) -> str
 def decode_access_token(token: str) -> dict | None:
     settings = get_settings()
     try:
-        return jwt_decode(
+        payload = jwt_decode(
             token,
             settings.SECRET_KEY,
             algorithms=[settings.JWT_ALGORITHM],
             issuer=settings.JWT_ISSUER,
             options={
-                "require": ["exp", "iat", "sub"],
+                "require": ["exp", "iat", "nbf", "sub", "typ"],
                 "verify_sub": True,
                 "verify_aud": False,
             },
         )
     except PyJWTError:
         return None
+    # Explicitly pin the token type so a non-access token (e.g. a future
+    # refresh/CSRF token signed with the same key/issuer) can never be accepted
+    # as an access token. PyJWT enforces nbf/exp on its own once present.
+    if payload.get("typ") != "access":
+        return None
+    return payload
 
 
 def validate_password_strength(password: str) -> bool:

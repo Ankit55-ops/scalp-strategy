@@ -1,8 +1,9 @@
 "use client";
 
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError, tokenStore } from "@/lib/api";
+import { api, ApiError, getExnessStatusCard, tokenStore } from "@/lib/api";
 import { Badge, Card, SectionTitle, Spinner } from "@/components/ui";
+import { ProviderConnectionStatusCard } from "@/components/ProviderConnectionStatusCard";
 import CandlestickChart from "@/components/chart/CandlestickChart";
 import type {
   CandleResponse,
@@ -13,6 +14,7 @@ import type {
   LiveQuoteStreamEvent,
   MarketDataStreamEvent,
   ProviderStatus,
+  ProviderConnectionStatusCard as ExnessCardData,
   QuoteView,
 } from "@/types";
 
@@ -42,6 +44,7 @@ function marketDataSocketUrl(): string {
 
 export default function MarketDataPage() {
   const [status, setStatus] = useState<ProviderStatus | null>(null);
+  const [exnessCard, setExnessCard] = useState<ExnessCardData | null>(null);
   const [instruments, setInstruments] = useState<InstrumentView[]>([]);
   const [feed, setFeed] = useState<FeedHealthRow[]>([]);
   const [quote, setQuote] = useState<QuoteView | null>(null);
@@ -80,6 +83,7 @@ export default function MarketDataPage() {
   async function load() {
     await Promise.all([
       api<ProviderStatus>("/market-data/providers/status", { token: tokenStore.get() }).then(setStatus).catch(() => {}),
+      getExnessStatusCard(tokenStore.get() as string).then(setExnessCard).catch(() => {}),
       api<InstrumentView[]>("/market-data/instruments", { token: tokenStore.get() }).then(setInstruments).catch(() => {}),
       api<FeedHealthRow[]>("/market-data/feed-health", { token: tokenStore.get() }).then(setFeed).catch(() => {}),
     ]);
@@ -325,9 +329,7 @@ export default function MarketDataPage() {
             <Stat label="Ingestion" value={ingestion.running ? `on · ${ingestion.provider}` : "off"} tone={ingestion.running ? "good" : "default"} />
           </div>
           {status.health.detail && <p className="text-xs text-text-dim mt-2">{status.health.detail}</p>}
-          <p className="text-xs text-danger mt-3">
-            Live trading is disabled. Provider keys are encrypted server-side and never reach the browser.
-          </p>
+          <ProviderConnectionStatusCard card={exnessCard} onConnect={() => (window.location.href = "/settings/providers")} />
         </Card>
 
         <Card title="Connect a licensed provider">

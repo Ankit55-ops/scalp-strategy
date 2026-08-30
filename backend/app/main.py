@@ -20,9 +20,11 @@ from app.api.routes import (
     chart_layouts,
     dashboard,
     deployments,
+    exness,
     health,
     market_data,
     paper,
+    real_historical,
     risk,
     strategies,
     stream,
@@ -56,14 +58,14 @@ async def lifespan(app: FastAPI):
 
         with engine.connect() as conn:
             conn.execute(__import__("sqlalchemy").text("SELECT 1"))
-    except Exception as exc:  # noqa: BLE001
+    except Exception as exc:
         raise RuntimeError(f"database unavailable: {exc}") from exc
     # Start real-time ingestion for workspaces on real licensed providers.
     try:
         from app.services.ingestion import auto_start
 
         auto_start()
-    except Exception:  # noqa: BLE001
+    except Exception:  # noqa: BLE001 - optional background feature
         pass
     yield
 
@@ -144,6 +146,8 @@ app.include_router(stream.router, prefix=api_prefix)
 app.include_router(chart_layouts.router, prefix=api_prefix)
 app.include_router(audit.router, prefix=api_prefix)
 app.include_router(alerts.router, prefix=api_prefix)
+app.include_router(exness.router, prefix=api_prefix)
+app.include_router(real_historical.router, prefix=api_prefix)
 
 
 @app.get("/", include_in_schema=False)

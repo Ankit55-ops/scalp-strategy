@@ -1,6 +1,7 @@
 "use client";
 
 import { FormEvent, useEffect, useState } from "react";
+import Link from "next/link";
 import { api, ApiError, tokenStore } from "@/lib/api";
 import { Badge, Card, SectionTitle, Stat } from "@/components/ui";
 import EquityChart from "@/components/EquityChart";
@@ -80,7 +81,12 @@ export default function BacktestsPage() {
 
   return (
     <div>
-      <SectionTitle>Backtest Lab</SectionTitle>
+      <div className="flex items-center justify-between mb-4">
+        <SectionTitle>Backtest Lab</SectionTitle>
+        <Link href="/real-historical" className="text-sm text-accent hover:underline">
+          Real Historical Data →
+        </Link>
+      </div>
 
       <Card title="Run a backtest" className="mb-6">
         <form onSubmit={run} className="grid md:grid-cols-6 gap-3 items-end">

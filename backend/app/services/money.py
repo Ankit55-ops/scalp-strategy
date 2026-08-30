@@ -41,7 +41,7 @@ def to_float(value, places: int = _MONEY_PLACES) -> float:
 
 
 def add(*values) -> float:
-    total = sum((d(v) for v in values), Decimal("0"))
+    total = sum((d(v) for v in values), Decimal(0))
     return float(_round(total, _MONEY_PLACES))
 
 

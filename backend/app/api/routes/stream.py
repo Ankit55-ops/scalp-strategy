@@ -41,8 +41,14 @@ _active_sockets: dict[int, int] = {}
 
 
 def _origin_allowed(origin: str | None) -> bool:
+    """CSWSH guard: the Origin header must be present AND in the allow-list.
+
+    Browsers always send Origin on WebSocket handshakes, so a missing header
+    indicates a non-browser client and is rejected. This prevents a token
+    bearer from bypassing origin validation by simply omitting the header.
+    """
     if origin is None:
-        return True
+        return False
     allowed = get_settings().cors_origins
     return origin in allowed
 
@@ -121,4 +127,9 @@ def _safe_provider_status(db: Session, workspace_id: str) -> dict:
     try:
         return provider_status(db, workspace_id)
     except Exception:  # noqa: BLE001
+        # The fallback must not poison the session transaction: without a
+        # rollback the failed provider query would abort the transaction and
+        # every later statement in this WS session would raise
+        # InFailedSqlTransaction.
+        db.rollback()
         return {"active_provider": "unknown", "health": {"status": "unavailable"}}
