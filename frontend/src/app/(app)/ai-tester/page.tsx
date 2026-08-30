@@ -252,7 +252,9 @@ export default function AiTesterPage() {
       setAnalysis(res.analysis);
       setConverted(res.converted);
       setCacheHit(res.cache_hit);
-      setSpecJson(JSON.stringify(res.strategy_spec ?? convertAnalysisToSpec(res.analysis), null, 2));
+      setSpecJson(
+        JSON.stringify(res.strategy_spec ?? res.suggested_spec ?? convertAnalysisToSpec(res.analysis), null, 2)
+      );
       setLastSavedSpecJson(null);
       setMsg(
         res.cache_hit
@@ -443,6 +445,23 @@ export default function AiTesterPage() {
               placeholder="Describe your entry/exit rules, symbols, timeframe, session, stop-loss and risk."
               maxLength={4000}
             />
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="text-[11px] text-text-dim">Examples:</span>
+              {[
+                "Breakout of the 50 bar range on USDCAD M15 during the New York session, ATR 14 stop, 1:2 reward, risk 1% per trade.",
+                "Long only EMA crossover momentum on EURUSD H1, ATR 14 stop, 1:2 reward, risk 1.5% per trade, max 3 trades a day.",
+                "Mean reversion fading RSI extremes on GBPUSD M5 with an ATR 14 stop and 1:3 reward, max spread 1.5 pips.",
+              ].map((ex) => (
+                <button
+                  key={ex}
+                  type="button"
+                  onClick={() => setPrompt(ex)}
+                  className="rounded-full border border-border px-2 py-0.5 text-[11px] text-text-dim hover:border-accent hover:text-text"
+                >
+                  {ex.split(" ")[0].toLowerCase()}
+                </button>
+              ))}
+            </div>
             <div className="flex items-center justify-between text-xs text-text-dim">
               <button
                 type="submit"
@@ -494,8 +513,9 @@ export default function AiTesterPage() {
               )}
               {!converted && !invalid && (
                 <p className="text-xs text-warn">
-                  The analyzer could not fully convert this description. Complete the missing fields below using the
-                  allowed DSL, then save.
+                  The analyzer partially converted this description. The rules and DSL expressions are already
+                  prefilled — complete the fields the text did not state (e.g. symbol, timeframe) or re-analyze
+                  with those details, then save.
                 </p>
               )}
               <textarea
@@ -823,18 +843,65 @@ export default function AiTesterPage() {
   );
 }
 
-// Fallback used only when the analyzer could not return a converted spec (e.g.
-// NEEDS_USER_INPUT): builds a shape-safe skeleton from the reviewed analysis.
-// The user completes the missing strict fields before saving. This module never
-// executes any user/AI-provided code.
+// Fallback used only when the analyzer returned neither a converted spec nor a
+// suggested draft: builds a shape-safe spec whose expressions mirror the
+// backend's allow-listed family templates so every rule has a non-empty DSL
+// expression. The user completes the fields the text did not state before
+// saving. This module never executes any user/AI-provided code.
+function periodOf(analysis: AIStrategyAnalysis, name: string, fallback: number): number {
+  const ind = (analysis.indicators || []).find((i) => i.name.toUpperCase() === name.toUpperCase());
+  const p = Number(ind?.parameters?.period);
+  return Number.isFinite(p) && p >= 1 ? Math.round(p) : fallback;
+}
+
+function entryExpressions(analysis: AIStrategyAnalysis): Record<string, string> {
+  const family = analysis.strategy_family;
+  const fast = periodOf(analysis, "EMA", 20);
+  const slow = periodOf(analysis, "SMA", 50);
+  const rsi = periodOf(analysis, "RSI", 14);
+  switch (family) {
+    case "trend_pullback":
+      return {
+        long: `ema(close,${slow}) > ema(close,${fast}) and low <= ema(close,${fast}) and close > ema(close,${fast}) and in_session`,
+        short: `ema(close,${slow}) < ema(close,${fast}) and high >= ema(close,${fast}) and close < ema(close,${fast}) and in_session`,
+      };
+    case "breakout":
+      return {
+        long: `close > highest(high,20) and in_session`,
+        short: `close < lowest(low,20) and in_session`,
+      };
+    case "mean_reversion":
+      return {
+        long: `rsi(close,${rsi}) < 30 and in_session`,
+        short: `rsi(close,${rsi}) > 70 and in_session`,
+      };
+    case "momentum":
+      return {
+        long: `crossover(ema(close,${fast}),ema(close,${slow})) and in_session`,
+        short: `crossunder(ema(close,${fast}),ema(close,${slow})) and in_session`,
+      };
+    case "liquidity_sweep":
+      return {
+        long: `low < lowest(low,${Math.max(slow, 20)}) and close > low and in_session`,
+        short: `high > highest(high,${Math.max(slow, 20)}) and close < high and in_session`,
+      };
+    default:
+      return {
+        long: `close < sma(close,20) and rsi(close,14) < 35 and in_session`,
+        short: `close > sma(close,20) and rsi(close,14) > 65 and in_session`,
+      };
+  }
+}
+
 function convertAnalysisToSpec(analysis: AIStrategyAnalysis): Record<string, unknown> {
   const session = analysis.sessions_utc?.[0] || { name: "Full", start: "00:00", end: "23:59" };
   const family = FAMILY_MAP[analysis.strategy_family] ?? "trend_pullback";
+  const expr = entryExpressions(analysis);
   const rules =
     analysis.entry_rules?.map((r, i) => ({
       id: `${r.side}_rule_${i + 1}`,
       description: r.rule,
-      expression: "",
+      expression: expr[r.side] ?? expr.long ?? "",
     })) || [];
   return {
     name: analysis.name || "AI Strategy",
@@ -847,7 +914,11 @@ function convertAnalysisToSpec(analysis: AIStrategyAnalysis): Record<string, unk
     indicators: analysis.indicators || [],
     entry_rules: rules,
     exit_rules:
-      analysis.exit_rules?.map((r, i) => ({ id: `exit_rule_${i + 1}`, description: r.rule, expression: "" })) || [],
+      analysis.exit_rules?.map((r, i) => ({
+        id: `exit_rule_${i + 1}`,
+        description: r.rule,
+        expression: family === "trend_pullback" ? `close < ema(close,${periodOf(analysis, "EMA", 20)})` : "rsi(close,14) > 60",
+      })) || [],
     risk_management: {
       risk_per_trade_pct: analysis.risk_rules?.risk_per_trade_pct ?? 0.25,
       max_daily_loss_pct: analysis.risk_rules?.max_daily_loss_pct ?? 1.0,
@@ -872,6 +943,6 @@ function convertAnalysisToSpec(analysis: AIStrategyAnalysis): Record<string, unk
     assumptions: analysis.assumptions || [],
     failure_modes: analysis.failure_conditions || [],
     plain_english_explanation: analysis.description || "",
-    confidence_notes: "AI Strategy Tester: complete the strict spec fields before saving — the analyzer could not fully convert this description.",
+    confidence_notes: "AI Strategy Tester: expression templates prefilled — complete the strict spec fields the text did not state before saving.",
   };
 }

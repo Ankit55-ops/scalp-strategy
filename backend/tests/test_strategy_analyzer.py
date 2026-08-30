@@ -216,3 +216,51 @@ def test_pair_symbols_do_not_trigger_dca_grid_rejection():
     assert body["analysis"]["testability_status"] == "VALID", body
     assert not any("grid" in w or "averaging" in w for w in body["analysis"]["warnings"]), body
     assert body["converted"] is True and body["strategy_spec"] is not None
+
+
+def test_directional_filter_produces_single_side_spec():
+    token = _user()
+    r = _analyze(token, "Long only trend pullback on EURUSD M5, EMA 20/50, ATR 14 stop.")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["analysis"]["testability_status"] == "VALID", body
+    rules = body["strategy_spec"]["entry_rules"]
+    assert len(rules) == 1 and rules[0]["id"].startswith("long"), rules
+    assert "in_session" in rules[0]["expression"]
+
+
+def test_needs_user_input_still_gets_prefilled_spec():
+    # Missing a symbol + timeframe in the text -> must be completed, but the
+    # suggested spec must carry fully-formed (non-empty) DSL expressions so the
+    # user never has to hand-write an expression.
+    token = _user()
+    r = _analyze(token, "Momentum strategy that buys EMA crossovers with a stop loss and 1:2 reward.")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["analysis"]["testability_status"] == "NEEDS_USER_INPUT", body
+    suggested = body["suggested_spec"]
+    assert suggested is not None
+    assert suggested["sessions_utc"] and suggested["entry_rules"]
+    for rule in suggested["entry_rules"] + suggested["exit_rules"]:
+        assert rule["expression"].strip(), rule
+    assert "timeframe" in " ".join(body["analysis"]["warnings"]).lower()
+
+
+def test_breakout_respects_declared_range_window():
+    token = _user()
+    r = _analyze(token, "Breakout of the 50 bar range on USDCAD M15, ATR 14 stop.")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["converted"] is True, body
+    long_expr = next(r["expression"] for r in body["strategy_spec"]["entry_rules"] if r["id"].startswith("long"))
+    assert "highest(high,50)" in long_expr, long_expr
+
+
+def test_structure_stop_requires_user_input():
+    token = _user()
+    r = _analyze(token, "Sell breakouts on EURUSD H1 with a stop below structure and 1:2 reward.")
+    assert r.status_code == 200, r.text
+    body = r.json()
+    assert body["analysis"]["stop_loss"]["type"] == "STRUCTURE"
+    assert body["analysis"]["testability_status"] == "NEEDS_USER_INPUT", body
+    assert not body["converted"]

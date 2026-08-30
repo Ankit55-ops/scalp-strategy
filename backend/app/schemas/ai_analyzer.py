@@ -132,6 +132,7 @@ class StrategyAnalyzeResponse(BaseModel):
     analysis: AIStrategyAnalysis
     converted: bool = False
     strategy_spec: StrategySpec | None = None
+    suggested_spec: StrategySpec | None = None
     cache_hit: bool = False
     provider_used: str = "mock"
     text_sha256: str = ""

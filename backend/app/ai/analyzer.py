@@ -50,6 +50,7 @@ from app.schemas.strategy import StrategySpec
 logger = logging.getLogger("fxscalper.ai_analyzer")
 
 SESSION_UTC = {
+    "Full Day": {"name": "Full Day", "start": "00:00", "end": "23:59"},
     "Asian": {"name": "Asian", "start": "00:00", "end": "07:00"},
     "London": {"name": "London", "start": "07:00", "end": "12:00"},
     "New York": {"name": "New York", "start": "12:00", "end": "17:00"},
@@ -116,8 +117,6 @@ def _rejections(text: str, analysis: AIStrategyAnalysis) -> list[str]:
         out.append("Rejected: the design uses tiered / escalating position sizing.")
     if not analysis.entry_rules:
         out.append("Incomplete: no entry rules could be identified.")
-    if analysis.testability_status == "VALID" and analysis.stop_loss.type != "ATR" and analysis.stop_loss.type != "FIXED":
-        out.append("Incomplete: stop loss method must be ATR or FIXED to be testable.")
     return out
 
 
@@ -152,6 +151,82 @@ def _extract_int(text: str, name: str, default: int) -> int:
         return default
     val = int(m.group(1))
     return val if 1 <= val <= 100 else default
+
+
+def _extract_direction(text: str) -> str:
+    """Detect a directional filter: 'long only' / 'short only' else 'both'."""
+    low = text.lower()
+    long_only = any(
+        k in low
+        for k in (
+            "long only", "only long", "longs only", "buy only", "only buy",
+            "buy signals only", "long entries only", "go long", "look for longs",
+        )
+    )
+    short_only = any(
+        k in low
+        for k in (
+            "short only", "only short", "shorts only", "sell only", "only sell",
+            "sell signals only", "short entries only", "go short", "look for shorts",
+        )
+    )
+    if long_only and not short_only:
+        return "long"
+    if short_only and not long_only:
+        return "short"
+    return "both"
+
+
+def _extract_range_window(text: str, default: int = 20) -> int:
+    """Detect an explicit range window for breakout-style strategies."""
+    m = re.search(r"(\d{1,3})\s*(?:bar|bar range|candle|period)", text.lower())
+    if m:
+        val = int(m.group(1))
+        if 5 <= val <= 200:
+            return val
+    return default
+
+
+def _extract_stop(text: str, atr_default: int) -> AIStopLoss:
+    """Server-side stop-loss inference (honest: only ATR is fully testable).
+
+    Structure-based stops and fixed-pip stops cannot be reproduced by the
+    backtest engine's ATR-based risk engine, so they are surfaced as
+    ``STRUCTURE`` / ``FIXED`` and require user calibration (NEEDS_USER_INPUT),
+    never silently substituted.
+    """
+    low = text.lower()
+    if ("structure" in low and re.search(r"stop|sl\b|stoploss", low)) or any(
+        k in low
+        for k in (
+            "stop at structure", "structural stop", "stop on support",
+            "stop at support", "stop below support", "stop under support",
+            "stop at resistance", "stop below resistance",
+        )
+    ):
+        return AIStopLoss(type="STRUCTURE", atr_period=atr_default, multiplier=1.2)
+    m = re.search(r"stop\b[^\d]{0,12}?(\d{1,3}(?:\.\d{1,2})?)\s*pips?", low)
+    if m:
+        return AIStopLoss(type="FIXED", atr_period=atr_default, multiplier=1.2)
+    if re.search(r"\batr\b", low):
+        m = re.search(r"atr\s*(?:\(?\s*(\d{1,2})\s*\)?)?(?:\s*x\s*(\d(?:\.\d)?))?", low)
+        period = int(m.group(1)) if m and m.group(1) else atr_default
+        mult = float(m.group(2)) if m and m.group(2) else 1.2
+        return AIStopLoss(type="ATR", atr_period=period, multiplier=mult)
+    if re.search(r"fixed stop|fixed sl\b", low):
+        return AIStopLoss(type="FIXED", atr_period=atr_default, multiplier=1.2)
+    return AIStopLoss(type="ATR", atr_period=atr_default, multiplier=1.2)
+
+
+def _extract_take_profit(text: str) -> AITakeProfit:
+    low = text.lower()
+    m = re.search(r"\b1\s*[:/]\s*(\d{1,2}(?:\.\d)?)\b", low)
+    if not m:
+        m = re.search(r"(?:risk[ -]reward|reward)[^\d]{0,14}?(\d{1,2}(?:\.\d)?)\b", low)
+    if m:
+        val = float(m.group(1))
+        return AITakeProfit(type="RISK_REWARD", ratio=min(max(val, 0.5), 50.0))
+    return AITakeProfit(type="RISK_REWARD", ratio=1.5)
 
 
 def _extract_risk_rules(text: str) -> AIRiskRules:
@@ -193,12 +268,74 @@ def _family(text: str) -> str:
     return "ai_suggested"
 
 
+def _build_entry_rules(
+    family: str,
+    text: str,
+    ema_fast: int,
+    ema_slow: int,
+    rsi_period: int,
+    direction: str,
+) -> list[AIEntryRule]:
+    if family == "trend_pullback":
+        base = [
+            ("long", f"long when close > EMA({ema_fast}) and EMA({ema_slow}) rising"),
+            ("short", f"short when close < EMA({ema_fast}) and EMA({ema_slow}) falling"),
+        ]
+    elif family == "breakout":
+        window = _extract_range_window(text)
+        base = [
+            ("long", f"long when close breaks above the prior {window}-bar high"),
+            ("short", f"short when close breaks below the prior {window}-bar low"),
+        ]
+    elif family == "mean_reversion":
+        base = [
+            ("long", f"long when RSI({rsi_period}) < 30"),
+            ("short", f"short when RSI({rsi_period}) > 70"),
+        ]
+    elif family == "momentum":
+        base = [
+            ("long", f"long when EMA({ema_fast}) crosses above SMA({ema_slow})"),
+            ("short", f"short when EMA({ema_fast}) crosses below SMA({ema_slow})"),
+        ]
+    elif family == "liquidity_sweep":
+        base = [
+            ("long", "long when a sweep of a prior low fails and closes back above it"),
+            ("short", "short when a sweep of a prior high fails and closes back below it"),
+        ]
+    else:  # range_fade / ai_suggested
+        base = [
+            ("long", "long when price fades the upper extreme of the range"),
+            ("short", "short when price fades the lower extreme of the range"),
+        ]
+    if direction == "long":
+        base = [r for r in base if r[0] == "long"]
+    elif direction == "short":
+        base = [r for r in base if r[0] == "short"]
+    return [AIEntryRule(side=side, rule=rule) for side, rule in base]
+
+
+def _build_exit_rule(family: str, text: str) -> list[AIExitRule]:
+    low = text.lower()
+    m = re.search(
+        r"exit\s*(?:when|on|if)?[^\d]{0,30}?rsi\s*\(?\s*(\d{1,2})\s*\)?\s*([<>=]+)\s*(\d{1,3})",
+        low,
+    )
+    if m:
+        return [AIExitRule(rule=f"exit when RSI({m.group(1)}) {m.group(2)} {m.group(3)}")]
+    if family == "momentum":
+        return [AIExitRule(rule="exit when the moving averages cross back")]
+    if family == "mean_reversion":
+        return [AIExitRule(rule="exit when RSI(14) returns to the neutral zone (45-55)")]
+    return [AIExitRule(rule="exit when the entry signal flips or the stop/target is hit")]
+
+
 def _mock_analyze(text: str) -> AIStrategyAnalysis:
     """Deterministic offline analyzer: keyword/scoring based, fully testable."""
     low = text.lower()
     tf = _extract_timeframe(text) or "M5"
     symbols = _extract_symbols(text) or ["EURUSD"]
-    sessions = _extract_sessions(text) or [AISession(**SESSION_UTC["London"])]
+    direction = _extract_direction(text)
+    sessions = _extract_sessions(text) or [AISession(**SESSION_UTC["Full Day"])]
     family = _family(text)
 
     ema_fast = _extract_int(text, "ema", 10)
@@ -213,41 +350,44 @@ def _mock_analyze(text: str) -> AIStrategyAnalysis:
         AIIndicator(name="ATR", parameters={"period": atr_period}),
     ]
 
-    entry_rules: list[AIEntryRule] = []
-    if family == "trend_pullback":
-        entry_rules = [
-            AIEntryRule(side="long", rule=f"long when close > EMA({ema_fast}) and EMA({ema_slow}) rising"),
-            AIEntryRule(side="short", rule=f"short when close < EMA({ema_fast}) and EMA({ema_slow}) falling"),
-        ]
-    elif family == "breakout":
-        entry_rules = [
-            AIEntryRule(side="long", rule="long when close breaks above the prior 20-bar high"),
-            AIEntryRule(side="short", rule="short when close breaks below the prior 20-bar low"),
-        ]
-    elif family == "mean_reversion":
-        entry_rules = [
-            AIEntryRule(side="long", rule=f"long when RSI({rsi_period}) < 30"),
-            AIEntryRule(side="short", rule=f"short when RSI({rsi_period}) > 70"),
-        ]
-    elif family == "momentum":
-        entry_rules = [
-            AIEntryRule(side="long", rule=f"long when EMA({ema_fast}) crosses above SMA({ema_slow})"),
-            AIEntryRule(side="short", rule=f"short when EMA({ema_fast}) crosses below SMA({ema_slow})"),
-        ]
-    elif family == "liquidity_sweep":
-        entry_rules = [
-            AIEntryRule(side="long", rule="long when a sweep of a prior low fails and closes back above it"),
-            AIEntryRule(side="short", rule="short when a sweep of a prior high fails and closes back below it"),
-        ]
-    else:  # range_fade / ai_suggested
-        entry_rules = [
-            AIEntryRule(side="long", rule="long when price fades the upper extreme of the range"),
-            AIEntryRule(side="short", rule="short when price fades the lower extreme of the range"),
-        ]
+    entry_rules = _build_entry_rules(
+        family, text, ema_fast, ema_slow, rsi_period, direction
+    )
+    exit_rules = _build_exit_rule(family, text)
+    stop_loss = _extract_stop(text, atr_period)
+    take_profit = _extract_take_profit(text)
 
-    exit_rules = [
-        AIExitRule(rule="exit when the trend signal flips or the stop/target is hit"),
+    assumptions = [
+        "Rules are evaluated on completed candles only (never the forming candle).",
+        "Entry rules gate on the UTC session window via the in_session signal.",
     ]
+    if not _extract_sessions(text):
+        assumptions.append(
+            "No session window was stated; the strategy trades across all UTC sessions."
+        )
+    if not _extract_timeframe(text):
+        assumptions.append(
+            "No timeframe was stated in the text; a timeframe is required before testing."
+        )
+    if not _extract_symbols(text):
+        assumptions.append(
+            "No symbol was stated in the text; at least one symbol is required before testing."
+        )
+    if direction != "both":
+        assumptions.append(f"Trades {direction} direction only, as stated.")
+    if stop_loss.type != "ATR":
+        assumptions.append(
+            f"Stop is {stop_loss.type}. Only an ATR stop can auto-calibrate; "
+            "review/complete the stop before testing."
+        )
+    elif not re.search(r"\batr\b", low):
+        assumptions.append(
+            f"No ATR stop was specified; ATR({atr_period}) x{stop_loss.multiplier} assumed."
+        )
+    if not re.search(r"(?:\b1\s*[:/]|risk[ -]reward|reward)", low):
+        assumptions.append(
+            f"No take-profit ratio was specified; risk:reward {take_profit.ratio} assumed."
+        )
 
     analysis = AIStrategyAnalysis(
         name=family.replace("_", " ").title() + " " + tf,
@@ -262,12 +402,9 @@ def _mock_analyze(text: str) -> AIStrategyAnalysis:
         entry_rules=entry_rules,
         exit_rules=exit_rules,
         risk_rules=_extract_risk_rules(text),
-        stop_loss=AIStopLoss(type="ATR", atr_period=atr_period, multiplier=1.2),
-        take_profit=AITakeProfit(type="RISK_REWARD", ratio=1.5),
-        assumptions=[
-            "Rules evaluated on completed candles only (never the forming candle).",
-            f"Trading limited to {sessions[0].name} UTC session when possible.",
-        ],
+        stop_loss=stop_loss,
+        take_profit=take_profit,
+        assumptions=assumptions,
         warnings=[],
         failure_conditions=[
             "Wide spread / low-liquidity conditions can degrade fills.",
@@ -286,8 +423,9 @@ def _apply_status(analysis: AIStrategyAnalysis, text: str) -> AIStrategyAnalysis
         return analysis
 
     # Inference clarity: we need an unambiguous timeframe + at least one symbol
-    # declared in the text + a structured entry rule + an ATR/FIXED stop loss,
-    # otherwise the strategist must review/edit before anything runs.
+    # declared in the text + a structured entry rule + an ATR stop loss that the
+    # backtest risk engine can actually reproduce, otherwise the strategist must
+    # review/edit before anything runs (engine only ATR-calibrates stops).
     missing: list[str] = []
     if not _extract_timeframe(text):
         missing.append("timeframe")
@@ -295,8 +433,8 @@ def _apply_status(analysis: AIStrategyAnalysis, text: str) -> AIStrategyAnalysis
         missing.append("symbols")
     if not analysis.entry_rules:
         missing.append("entry rules")
-    if analysis.stop_loss.type not in ("ATR", "FIXED"):
-        missing.append("stop loss method")
+    if analysis.stop_loss.type != "ATR":
+        missing.append("a testable (ATR) stop loss method")
     if missing:
         analysis.testability_status = "NEEDS_USER_INPUT"
         analysis.warnings.append(
@@ -337,8 +475,8 @@ def _llm_analyze(text: str) -> AIStrategyAnalysis:
         logger.warning("llm analyzer: schema-invalid output discarded (%s)", exc)
         raise
 
-    # Never trust the LLM's self-assessed status — apply our own checks.
-    analysis = _apply_status(analysis, text)
+    # Testability is re-checked by the caller via _apply_status — we never
+    # trust the LLM's self-assessed status.
     return analysis
 
 
@@ -398,14 +536,16 @@ def analyze_strategy(
         .first()
     )
     if cached is not None:
+        analysis = AIStrategyAnalysis.model_validate(cached.analysis)
         return StrategyAnalyzeResponse(
-            analysis=AIStrategyAnalysis.model_validate(cached.analysis),
+            analysis=analysis,
             converted=cached.converted,
             strategy_spec=(
                 StrategySpec.model_validate(cached.strategy_spec)
                 if cached.strategy_spec is not None
                 else None
             ),
+            suggested_spec=_suggested_spec(analysis),
             cache_hit=True,
             provider_used=cached.provider_used,
             text_sha256=digest,
@@ -413,7 +553,16 @@ def analyze_strategy(
 
     provider = _provider_requested(req, get_settings().LLM_PROVIDER)
     if provider == "llm":
-        analysis = _llm_analyze(text)
+        try:
+            analysis = _llm_analyze(text)
+        except Exception as exc:  # never fail the request — degrade gracefully
+            logger.warning("llm analyzer failed (%s); using offline engine", exc)
+            provider = "mock"
+            analysis = _mock_analyze(text)
+            analysis.warnings.append(
+                "The configured LLM provider failed; this analysis came from "
+                "the offline engine — review before use."
+            )
     else:
         analysis = _mock_analyze(text)
 
@@ -428,6 +577,8 @@ def analyze_strategy(
             logger.warning("analyzer: DSL conversion failed: %s", exc)
             analysis.testability_status = "NEEDS_USER_INPUT"
             analysis.warnings.append("Could not convert to an executable spec; please edit the rules.")
+
+    suggested = None if converted else _suggested_spec(analysis)
 
     row = StrategyAnalysisCache(
         workspace_id=workspace_id,
@@ -450,14 +601,16 @@ def analyze_strategy(
             .first()
         )
         if cached is not None:
+            cached_analysis = AIStrategyAnalysis.model_validate(cached.analysis)
             return StrategyAnalyzeResponse(
-                analysis=AIStrategyAnalysis.model_validate(cached.analysis),
+                analysis=cached_analysis,
                 converted=cached.converted,
                 strategy_spec=(
                     StrategySpec.model_validate(cached.strategy_spec)
                     if cached.strategy_spec is not None
                     else None
                 ),
+                suggested_spec=_suggested_spec(cached_analysis),
                 cache_hit=True,
                 provider_used=cached.provider_used,
                 text_sha256=digest,
@@ -467,10 +620,28 @@ def analyze_strategy(
         analysis=analysis,
         converted=converted,
         strategy_spec=spec,
+        suggested_spec=suggested,
         cache_hit=False,
         provider_used=provider,
         text_sha256=digest,
     )
+
+
+def _suggested_spec(analysis: AIStrategyAnalysis) -> StrategySpec | None:
+    """A review draft for NEEDS_USER_INPUT analyses.
+
+    Always carries fully-formed, allow-listed DSL expressions so the user only
+    has to complete what the text did not state (e.g. symbol / timeframe / stop
+    choice) instead of hand-writing expressions. Returns None when no valid
+    draft can be produced (engine never guesses into an unsafe design).
+    """
+    if analysis.testability_status != "NEEDS_USER_INPUT":
+        return None
+    try:
+        return _to_strategy_spec(analysis)
+    except (pydantic.ValidationError, TypeError, ValueError) as exc:
+        logger.warning("analyzer: suggested spec failed: %s", exc)
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -498,34 +669,45 @@ def _entry_exprs(family: str, analysis: AIStrategyAnalysis) -> list[tuple[str, s
 
     if family == "trend_pullback":
         return [
-            ("long", f"ema(close,{ema_slow}) > ema(close,{ema_fast}) and low <= ema(close,{ema_fast}) and close > ema(close,{ema_fast})"),
-            ("short", f"ema(close,{ema_slow}) < ema(close,{ema_fast}) and high >= ema(close,{ema_fast}) and close < ema(close,{ema_fast})"),
+            ("long", f"ema(close,{ema_slow}) > ema(close,{ema_fast}) and low <= ema(close,{ema_fast}) and close > ema(close,{ema_fast}) and in_session"),
+            ("short", f"ema(close,{ema_slow}) < ema(close,{ema_fast}) and high >= ema(close,{ema_fast}) and close < ema(close,{ema_fast}) and in_session"),
         ]
     if family == "breakout":
+        window = _range_window_from_rules(analysis)
         return [
-            ("long", f"close > highest(high,{int(max(ema_fast, 20))})"),
-            ("short", f"close < lowest(low,{int(max(ema_fast, 20))})"),
+            ("long", f"close > highest(high,{window}) and in_session"),
+            ("short", f"close < lowest(low,{window}) and in_session"),
         ]
     if family == "mean_reversion":
         return [
-            ("long", f"rsi(close,{rsi_p}) < 30"),
-            ("short", f"rsi(close,{rsi_p}) > 70"),
+            ("long", f"rsi(close,{rsi_p}) < 30 and in_session"),
+            ("short", f"rsi(close,{rsi_p}) > 70 and in_session"),
         ]
     if family == "momentum":
         return [
-            ("long", f"crossover(ema(close,{ema_fast}),ema(close,{ema_slow}))"),
-            ("short", f"crossunder(ema(close,{ema_fast}),ema(close,{ema_slow}))"),
+            ("long", f"crossover(ema(close,{ema_fast}),ema(close,{ema_slow})) and in_session"),
+            ("short", f"crossunder(ema(close,{ema_fast}),ema(close,{ema_slow})) and in_session"),
         ]
     if family == "liquidity_sweep":
         return [
-            ("long", f"low < lowest(low,{int(max(ema_slow,20))}) and close > low"),
-            ("short", f"high > highest(high,{int(max(ema_slow,20))}) and close < high"),
+            ("long", f"low < lowest(low,{int(max(ema_slow,20))}) and close > low and in_session"),
+            ("short", f"high > highest(high,{int(max(ema_slow,20))}) and close < high and in_session"),
         ]
     # range_fade / ai_suggested default: range fade
     return [
-        ("long", "close < sma(close,20) and rsi(close,14) < 35"),
-        ("short", "close > sma(close,20) and rsi(close,14) > 65"),
+        ("long", "close < sma(close,20) and rsi(close,14) < 35 and in_session"),
+        ("short", "close > sma(close,20) and rsi(close,14) > 65 and in_session"),
     ]
+
+
+def _range_window_from_rules(analysis: AIStrategyAnalysis, default: int = 20) -> int:
+    for r in analysis.entry_rules:
+        m = re.search(r"prior (\d{1,3})-?bar", r.rule)
+        if m:
+            val = int(m.group(1))
+            if 5 <= val <= 200:
+                return val
+    return default
 
 
 def _to_strategy_spec(analysis: AIStrategyAnalysis) -> StrategySpec | None:
@@ -533,24 +715,30 @@ def _to_strategy_spec(analysis: AIStrategyAnalysis) -> StrategySpec | None:
     slow = _lookup(analysis, "SMA", 50)
     fast = _lookup(analysis, "EMA", 20)
     atr_p = _lookup(analysis, "ATR", 14)
-    session = analysis.sessions_utc[0] if analysis.sessions_utc else AISession(**SESSION_UTC["London"])
+    session = analysis.sessions_utc[0] if analysis.sessions_utc else AISession(**SESSION_UTC["Full Day"])
 
-    entries = _entry_exprs(family, analysis)
+    # Build entry rules only for the sides the analysis actually declared, in the
+    # declared order, so long-only / short-only descriptions stay directional.
+    expr_by_side = dict(_entry_exprs(family, analysis))
     entry_rules = []
-    for idx, (side, expr) in enumerate(entries, start=1):
-        # keep only rules the analysis actually declared for that side
-        rule = f"{side}_rule_{idx}"
+    for idx, r in enumerate(analysis.entry_rules, start=1):
+        expr = expr_by_side.get(r.side)
+        if not expr:
+            continue
         entry_rules.append({
-            "id": rule,
-            "description": _rule_description(analysis, side, expr),
+            "id": f"{r.side}_rule_{idx}",
+            "description": r.rule,
             "expression": expr,
         })
 
     exit_rules = [{
         "id": "exit_rule_1",
-        "description": "Exit when the trend/mean-reversion signal reverts.",
+        "description": analysis.exit_rules[0].rule if analysis.exit_rules else "Exit when the entry signal flips.",
         "expression": f"close < ema(close,{fast})" if family == "trend_pullback" else "rsi(close,14) > 60",
     }]
+
+    if not entry_rules:
+        return None
 
     # AI schema uses RISK_REWARD/ATR/FIXED (uppercase); the strategy DSL uses
     # risk_reward/ATR/FIXED/STRUCTURE literals.
@@ -614,10 +802,3 @@ def _to_strategy_spec(analysis: AIStrategyAnalysis) -> StrategySpec | None:
     except (pydantic.ValidationError, TypeError, ValueError) as exc:
         logger.warning("analyzer: spec validation failed for %s: %s", family, exc)
         return None
-
-
-def _rule_description(analysis: AIStrategyAnalysis, side: str, expr: str) -> str:
-    for r in analysis.entry_rules:
-        if r.side == side:
-            return r.rule
-    return f"{side.title()} entry: {expr}"

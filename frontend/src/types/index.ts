@@ -673,6 +673,7 @@ export type StrategyAnalysis = {
   analysis: AIStrategyAnalysis;
   converted: boolean;
   strategy_spec: unknown | null;
+  suggested_spec: unknown | null;
   cache_hit: boolean;
   provider_used: string;
   text_sha256: string;

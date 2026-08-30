@@ -53,6 +53,23 @@ def test_crossover_requires_previous_bar():
     assert evaluate_expression("crossover(close, open)", ctx) is False or True
 
 
+def test_crossover_with_nested_series_calls():
+    # Analyzer-generated momentum rules use crossover(ema(...), ema(...)); the
+    # engine must evaluate them over the window, not just bare series symbols.
+    # Price dips 4 -> 1, then rallies to 6 on the final bar: the fast EMA
+    # (period 5) crosses back above the slow EMA (period 10) exactly there.
+    ctx = {"close": [4.0] * 6 + [1.0] * 6 + [2.0, 6.0], "__prev": True}
+    assert evaluate_expression("crossover(ema(close, 5), ema(close, 10))", ctx) is True
+    # A flat series (no crossing) must never produce a crossover.
+    flat = {"close": [10.0] * 40, "__prev": True}
+    assert evaluate_expression(
+        "crossunder(ema(close, 5), ema(close, 10))", flat
+    ) is False
+    # Bare-symbol args still work (mixed style).
+    mixed = {"close": [1, 1, 3], "__prev": True}
+    assert evaluate_expression("crossover(close, close)", mixed) is False
+
+
 def test_series_function():
     # ema over a window should produce a finite number
     ctx = {"close": [float(i) for i in range(1, 30)]}
